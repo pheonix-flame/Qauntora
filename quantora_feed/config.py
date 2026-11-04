@@ -92,7 +92,12 @@ class MT5Config:
 
 @dataclass(frozen=True)
 class DBConfig:
-    conn_str: str
+    """Oracle connection (python-oracledb thin mode — no Oracle Client install needed)."""
+    user: str
+    password: str
+    dsn: str               # host:port/service, e.g. localhost:1521/FREEPDB1
+    wallet_dir: str = ""   # only for Oracle Cloud Autonomous DB with mTLS
+    wallet_password: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,25 +119,7 @@ class FeedConfig:
     bar_close_delay_s: int = 20
     preview_dir: Path = BASE_DIR / "preview_output"
     log_dir: Path = BASE_DIR / "logs"
-    schema_file: Path = REPO_DIR / "sql" / "quantora_sqlserver_schema.sql"
-
-
-def _build_conn_str() -> str:
-    explicit = _env("SQLSERVER_CONN_STR")
-    if explicit:
-        return explicit
-    driver = _env("DB_DRIVER", "ODBC Driver 18 for SQL Server")
-    server = _env("DB_SERVER", r"localhost\SQLEXPRESS")
-    database = _env("DB_NAME", "quantora")
-    parts = [f"DRIVER={{{driver}}}", f"SERVER={server}", f"DATABASE={database}"]
-    user = _env("DB_USER")
-    if user:
-        parts += [f"UID={user}", f"PWD={_env('DB_PASSWORD')}"]
-    else:
-        parts.append("Trusted_Connection=yes")
-    # Local SQL Server Express uses a self-signed cert; ODBC 18 encrypts by default.
-    parts.append(f"TrustServerCertificate={_env('DB_TRUST_SERVER_CERT', 'yes')}")
-    return ";".join(parts) + ";"
+    schema_file: Path = REPO_DIR / "sql" / "quantora_oracle_schema.sql"
 
 
 def load_config() -> FeedConfig:
@@ -147,7 +134,13 @@ def load_config() -> FeedConfig:
             broker_tz=_env("BROKER_TZ"),
             broker_utc_offset_hours=float(offset_raw) if offset_raw else None,
         ),
-        db=DBConfig(conn_str=_build_conn_str()),
+        db=DBConfig(
+            user=_env("ORACLE_USER", "quantora"),
+            password=_env("ORACLE_PASSWORD"),
+            dsn=_env("ORACLE_DSN", "localhost:1521/FREEPDB1"),
+            wallet_dir=_env("ORACLE_WALLET_DIR"),
+            wallet_password=_env("ORACLE_WALLET_PASSWORD"),
+        ),
         news=NewsConfig(
             provider=_env("NEWS_PROVIDER", "forexfactory").lower(),
             fmp_api_key=_env("FMP_API_KEY"),

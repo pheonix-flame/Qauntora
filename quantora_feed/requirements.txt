@@ -2,9 +2,9 @@
 MetaTrader5          # Windows only; needs the MT5 desktop terminal installed and logged in
 pandas>=2.1
 numpy                # if `import MetaTrader5` fails with a numpy error: pip install "numpy<2"
-pyodbc>=5.0          # needs Microsoft "ODBC Driver 18 for SQL Server"
+oracledb>=2.0        # python-oracledb, thin mode: no Oracle Client install needed
 requests>=2.31
 python-dotenv>=1.0
 
-# dev / tests (run anywhere — MT5 and SQL Server are faked)
+# dev / tests (run anywhere — MT5 and Oracle are faked)
 pytest>=8

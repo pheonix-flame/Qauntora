@@ -1,5 +1,5 @@
 -- ============================================================
--- QUANTORA — SQL Server schema (current dev target)
+-- QUANTORA — SQL Server schema (documented fallback; Oracle is current)
 -- ============================================================
 
 CREATE TABLE qtx_ohlcv (

@@ -25,6 +25,17 @@ class Store(ABC):
     @abstractmethod
     def insert_news(self, events: list[NewsEvent]) -> int: ...
 
+    # -- admin (used by `check` and `init-db`) -------------------------------
+    def describe(self) -> str:
+        return type(self).__name__
+
+    def schema_exists(self) -> bool:
+        return True
+
+    def init_schema(self, schema_file) -> bool:
+        """Create the qtx_ tables. Returns False if they already exist."""
+        return False
+
     def close(self) -> None:
         pass
 

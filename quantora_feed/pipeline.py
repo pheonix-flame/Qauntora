@@ -1,7 +1,7 @@
 """Quantora Feed — orchestration.
 
 Wires price sources, news provider and store together. Knows nothing about
-MT5, ccxt, SQL Server or CSVs specifically — only the interfaces in
+MT5, ccxt, Oracle or CSVs specifically — only the interfaces in
 price_sources/base.py, news_sources/base.py and storage/base.py.
 """
 from __future__ import annotations

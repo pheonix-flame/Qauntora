@@ -300,15 +300,148 @@ Eight tables, all prefixed `qtx_`. Which engine owns which table matters — it'
 | `qtx_trades` | Sentinel only | Dashboard | Executed trades — entry, exit, P&L, slippage, fees, status |
 | `qtx_account_snapshots` | Sentinel only | Sentinel (kill-switch, CVaR), Dashboard | Balance/equity/margin history |
 
-Audit note across the whole schema: every table carries at least one timestamp column that is **never backfilled or edited by any engine** — set once, on insert, by the database itself (`SYSUTCDATETIME()` / `SYSTIMESTAMP`), not by application code.
+Audit note across the whole schema: every table carries at least one timestamp column that is **never backfilled or edited by any engine** — set once, on insert, by the database itself in **UTC** (`SYS_EXTRACT_UTC(SYSTIMESTAMP)` on Oracle / `SYSUTCDATETIME()` on SQL Server), not by application code. Note that plain `SYSTIMESTAMP` would record the database server's *local* time, which is why the Oracle defaults wrap it.
 
-**Current dev target: SQL Server.** Oracle DDL included below as the documented fallback — see Section 13 on why the switch is low-effort given the `db.py` isolation boundary.
+**Current target: Oracle** (Oracle AI Database Free locally, or an Always Free Autonomous Database), accessed with `python-oracledb` in thin mode. SQL Server DDL is kept below as the documented fallback; switching back is one new module in each engine's storage layer, because all SQL is isolated there.
 
-### SQL Server (current)
+### Oracle (current)
 
 ```sql
 -- ============================================================
--- QUANTORA — SQL Server schema (current dev target)
+-- QUANTORA — Oracle schema (current target)
+--
+-- Run as the quantora user (not SYS), e.g. via
+--   python quantora_feed/main.py init-db
+-- All audit timestamps default to SYS_EXTRACT_UTC(SYSTIMESTAMP): true UTC,
+-- set by the database on insert, independent of the server's own time zone.
+-- ============================================================
+
+CREATE TABLE qtx_ohlcv (
+    symbol          VARCHAR2(20)    NOT NULL,
+    asset_class     VARCHAR2(20)    NOT NULL,   -- FOREX | SYNTHETIC | CRYPTO
+    timeframe       VARCHAR2(5)     NOT NULL,   -- M15 stored; higher timeframes rolled up by query
+    bar_ts          TIMESTAMP       NOT NULL,
+    open_price      NUMBER(18,6)    NOT NULL,
+    high_price      NUMBER(18,6)    NOT NULL,
+    low_price       NUMBER(18,6)    NOT NULL,
+    close_price     NUMBER(18,6)    NOT NULL,
+    volume          NUMBER(18,2),
+    price_side      VARCHAR2(4)     DEFAULT 'MID',   -- BID | ASK | MID (MT5 bars are BID)
+    loaded_at       TIMESTAMP       DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP),
+    CONSTRAINT pk_qtx_ohlcv PRIMARY KEY (symbol, timeframe, bar_ts)
+);
+CREATE INDEX ix_ohlcv_ts ON qtx_ohlcv (bar_ts);
+
+CREATE TABLE qtx_news_events (
+    event_id        NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    event_ts        TIMESTAMP       NOT NULL,
+    currency        VARCHAR2(5)     NOT NULL,
+    impact          VARCHAR2(10)    NOT NULL,
+    title           VARCHAR2(200)   NOT NULL,
+    loaded_at       TIMESTAMP       DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP)
+);
+CREATE INDEX ix_news_ts ON qtx_news_events (event_ts, impact);
+
+CREATE TABLE qtx_config_versions (
+    version_id              NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    symbol                  VARCHAR2(20)  NOT NULL,
+    mode                    VARCHAR2(10)  NOT NULL,
+    weights_json            CLOB          NOT NULL,
+    tier2_threshold         NUMBER(4,2)   NOT NULL,
+    tier3_threshold         NUMBER(4,2)   NOT NULL,
+    configs_evaluated_count NUMBER,
+    backtest_metrics_json   CLOB,
+    proposed_at             TIMESTAMP     DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP),
+    approved_flag           CHAR(1)       DEFAULT 'N' CHECK (approved_flag IN ('Y','N')),
+    approved_at             TIMESTAMP,
+    CONSTRAINT ck_weights_json CHECK (weights_json IS JSON),
+    CONSTRAINT ck_metrics_json CHECK (backtest_metrics_json IS JSON)
+);
+CREATE INDEX ix_config_active ON qtx_config_versions (symbol, mode, approved_flag);
+
+CREATE TABLE qtx_signal_state (
+    symbol                   VARCHAR2(20)    NOT NULL,
+    mode                     VARCHAR2(10)    NOT NULL,
+    current_tier             VARCHAR2(15)    NOT NULL,
+    direction                VARCHAR2(4),
+    score                    NUMBER(4,2),
+    indicator_snapshot_json  CLOB,
+    notes                    VARCHAR2(400),
+    updated_at               TIMESTAMP       DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP),
+    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, mode),
+    CONSTRAINT ck_snapshot_json CHECK (indicator_snapshot_json IS JSON)
+);
+
+CREATE TABLE qtx_signals (
+    signal_id                NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    symbol                   VARCHAR2(20)    NOT NULL,
+    mode                     VARCHAR2(10)    NOT NULL,
+    tier                     VARCHAR2(15)    NOT NULL,
+    direction                VARCHAR2(4),
+    score                    NUMBER(4,2),
+    entry_price              NUMBER(18,6),
+    stop_loss                NUMBER(18,6),
+    take_profit               NUMBER(18,6),
+    lot_size                 NUMBER(10,4),
+    indicator_snapshot_json  CLOB,
+    created_at               TIMESTAMP       DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP),
+    CONSTRAINT ck_signals_json CHECK (indicator_snapshot_json IS JSON)
+);
+CREATE INDEX ix_signals_symbol_ts ON qtx_signals (symbol, created_at);
+
+CREATE TABLE qtx_signal_outcomes (
+    outcome_id      NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    signal_id       NUMBER          NOT NULL REFERENCES qtx_signals(signal_id),
+    outcome         VARCHAR2(10)    NOT NULL,
+    r_multiple      NUMBER(6,3),
+    resolved_price  NUMBER(18,6),
+    resolved_at     TIMESTAMP,
+    evaluated_at    TIMESTAMP       DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP),
+    CONSTRAINT ck_outcome_value CHECK (outcome IN ('WIN','LOSS','TIMEOUT'))
+);
+CREATE INDEX ix_outcomes_signal ON qtx_signal_outcomes (signal_id);
+CREATE INDEX ix_outcomes_outcome ON qtx_signal_outcomes (outcome);
+
+CREATE TABLE qtx_trades (
+    trade_id             NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    signal_id            NUMBER          REFERENCES qtx_signals(signal_id),
+    symbol                VARCHAR2(20)    NOT NULL,
+    direction             VARCHAR2(4)     NOT NULL,
+    lot_size              NUMBER(10,4)    NOT NULL,
+    signal_entry_price    NUMBER(18,6),
+    entry_price           NUMBER(18,6)    NOT NULL,
+    slippage_points       NUMBER(10,2),
+    spread_at_entry       NUMBER(10,4),
+    commission_usd        NUMBER(10,2),
+    execution_latency_ms  NUMBER,
+    stop_loss             NUMBER(18,6)    NOT NULL,
+    take_profit            NUMBER(18,6),
+    exit_price             NUMBER(18,6),
+    pnl_usd                NUMBER(14,2),
+    margin_used_usd        NUMBER(14,2),
+    status                 VARCHAR2(10)    DEFAULT 'OPEN',
+    opened_at              TIMESTAMP       DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP),
+    closed_at              TIMESTAMP
+);
+CREATE INDEX ix_trades_status ON qtx_trades (status);
+
+CREATE TABLE qtx_account_snapshots (
+    snapshot_id             NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    balance_usd             NUMBER(14,2)    NOT NULL,
+    equity_usd              NUMBER(14,2)    NOT NULL,
+    margin_used_usd         NUMBER(14,2),
+    margin_utilization_pct  NUMBER(5,2),
+    cvar_estimate_usd       NUMBER(14,2),
+    taken_at                TIMESTAMP       DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP)
+);
+CREATE INDEX ix_snapshots_ts ON qtx_account_snapshots (taken_at);
+```
+
+### SQL Server (documented fallback)
+
+```sql
+-- ============================================================
+-- QUANTORA — SQL Server schema (documented fallback; Oracle is current)
 -- ============================================================
 
 CREATE TABLE qtx_ohlcv (
@@ -433,134 +566,6 @@ CREATE TABLE qtx_account_snapshots (
 CREATE INDEX ix_snapshots_ts ON qtx_account_snapshots (taken_at);
 ```
 
-### Oracle (documented fallback, for a future move)
-
-```sql
--- ============================================================
--- QUANTORA — Oracle schema
--- ============================================================
-
-CREATE TABLE qtx_ohlcv (
-    symbol          VARCHAR2(20)    NOT NULL,
-    asset_class     VARCHAR2(20)    NOT NULL,
-    timeframe       VARCHAR2(5)     NOT NULL,
-    bar_ts          TIMESTAMP       NOT NULL,
-    open_price      NUMBER(18,6)    NOT NULL,
-    high_price      NUMBER(18,6)    NOT NULL,
-    low_price       NUMBER(18,6)    NOT NULL,
-    close_price     NUMBER(18,6)    NOT NULL,
-    volume          NUMBER(18,2),
-    price_side      VARCHAR2(4)     DEFAULT 'MID',
-    loaded_at       TIMESTAMP       DEFAULT SYSTIMESTAMP,
-    CONSTRAINT pk_qtx_ohlcv PRIMARY KEY (symbol, timeframe, bar_ts)
-);
-CREATE INDEX ix_ohlcv_ts ON qtx_ohlcv (bar_ts);
-
-CREATE TABLE qtx_news_events (
-    event_id        NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    event_ts        TIMESTAMP       NOT NULL,
-    currency        VARCHAR2(5)     NOT NULL,
-    impact          VARCHAR2(10)    NOT NULL,
-    title           VARCHAR2(200)   NOT NULL,
-    loaded_at       TIMESTAMP       DEFAULT SYSTIMESTAMP
-);
-CREATE INDEX ix_news_ts ON qtx_news_events (event_ts, impact);
-
-CREATE TABLE qtx_config_versions (
-    version_id              NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    symbol                  VARCHAR2(20)  NOT NULL,
-    mode                    VARCHAR2(10)  NOT NULL,
-    weights_json            CLOB          NOT NULL,
-    tier2_threshold         NUMBER(4,2)   NOT NULL,
-    tier3_threshold         NUMBER(4,2)   NOT NULL,
-    configs_evaluated_count NUMBER,
-    backtest_metrics_json   CLOB,
-    proposed_at             TIMESTAMP     DEFAULT SYSTIMESTAMP,
-    approved_flag           CHAR(1)       DEFAULT 'N' CHECK (approved_flag IN ('Y','N')),
-    approved_at             TIMESTAMP,
-    CONSTRAINT ck_weights_json CHECK (weights_json IS JSON),
-    CONSTRAINT ck_metrics_json CHECK (backtest_metrics_json IS JSON)
-);
-CREATE INDEX ix_config_active ON qtx_config_versions (symbol, mode, approved_flag);
-
-CREATE TABLE qtx_signal_state (
-    symbol                   VARCHAR2(20)    NOT NULL,
-    mode                     VARCHAR2(10)    NOT NULL,
-    current_tier             VARCHAR2(15)    NOT NULL,
-    direction                VARCHAR2(4),
-    score                    NUMBER(4,2),
-    indicator_snapshot_json  CLOB,
-    notes                    VARCHAR2(400),
-    updated_at               TIMESTAMP       DEFAULT SYSTIMESTAMP,
-    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, mode),
-    CONSTRAINT ck_snapshot_json CHECK (indicator_snapshot_json IS JSON)
-);
-
-CREATE TABLE qtx_signals (
-    signal_id                NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    symbol                   VARCHAR2(20)    NOT NULL,
-    mode                     VARCHAR2(10)    NOT NULL,
-    tier                     VARCHAR2(15)    NOT NULL,
-    direction                VARCHAR2(4),
-    score                    NUMBER(4,2),
-    entry_price              NUMBER(18,6),
-    stop_loss                NUMBER(18,6),
-    take_profit               NUMBER(18,6),
-    lot_size                 NUMBER(10,4),
-    indicator_snapshot_json  CLOB,
-    created_at               TIMESTAMP       DEFAULT SYSTIMESTAMP,
-    CONSTRAINT ck_signals_json CHECK (indicator_snapshot_json IS JSON)
-);
-CREATE INDEX ix_signals_symbol_ts ON qtx_signals (symbol, created_at);
-
-CREATE TABLE qtx_signal_outcomes (
-    outcome_id      NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    signal_id       NUMBER          NOT NULL REFERENCES qtx_signals(signal_id),
-    outcome         VARCHAR2(10)    NOT NULL,
-    r_multiple      NUMBER(6,3),
-    resolved_price  NUMBER(18,6),
-    resolved_at     TIMESTAMP,
-    evaluated_at    TIMESTAMP       DEFAULT SYSTIMESTAMP,
-    CONSTRAINT ck_outcome_value CHECK (outcome IN ('WIN','LOSS','TIMEOUT'))
-);
-CREATE INDEX ix_outcomes_signal ON qtx_signal_outcomes (signal_id);
-CREATE INDEX ix_outcomes_outcome ON qtx_signal_outcomes (outcome);
-
-CREATE TABLE qtx_trades (
-    trade_id             NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    signal_id            NUMBER          REFERENCES qtx_signals(signal_id),
-    symbol                VARCHAR2(20)    NOT NULL,
-    direction             VARCHAR2(4)     NOT NULL,
-    lot_size              NUMBER(10,4)    NOT NULL,
-    signal_entry_price    NUMBER(18,6),
-    entry_price           NUMBER(18,6)    NOT NULL,
-    slippage_points       NUMBER(10,2),
-    spread_at_entry       NUMBER(10,4),
-    commission_usd        NUMBER(10,2),
-    execution_latency_ms  NUMBER,
-    stop_loss             NUMBER(18,6)    NOT NULL,
-    take_profit            NUMBER(18,6),
-    exit_price             NUMBER(18,6),
-    pnl_usd                NUMBER(14,2),
-    margin_used_usd        NUMBER(14,2),
-    status                 VARCHAR2(10)    DEFAULT 'OPEN',
-    opened_at              TIMESTAMP       DEFAULT SYSTIMESTAMP,
-    closed_at              TIMESTAMP
-);
-CREATE INDEX ix_trades_status ON qtx_trades (status);
-
-CREATE TABLE qtx_account_snapshots (
-    snapshot_id             NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    balance_usd             NUMBER(14,2)    NOT NULL,
-    equity_usd              NUMBER(14,2)    NOT NULL,
-    margin_used_usd         NUMBER(14,2),
-    margin_utilization_pct  NUMBER(5,2),
-    cvar_estimate_usd       NUMBER(14,2),
-    taken_at                TIMESTAMP       DEFAULT SYSTIMESTAMP
-);
-CREATE INDEX ix_snapshots_ts ON qtx_account_snapshots (taken_at);
-```
-
 ---
 
 ## 12. Execution Realism & Operational Resilience
@@ -675,16 +680,19 @@ quantora/
 ├── design_doc/
 │   └── Quantora_Specification.md
 ├── sql/
-│   ├── quantora_sqlserver_schema.sql   # current dev target
-│   └── quantora_oracle_schema.sql      # documented fallback
+│   ├── quantora_oracle_schema.sql      # current target
+│   └── quantora_sqlserver_schema.sql   # documented fallback
 │
-├── quantora_feed/               ← built
+├── quantora_feed/               ← built (modular: each concern behind an interface + registry)
+│   ├── main.py                  # CLI: check / init-db / backfill / once / run
+│   ├── pipeline.py              # orchestration — knows only the interfaces below
 │   ├── config.py
-│   ├── db.py
-│   ├── mt5_source.py
-│   ├── crypto_source.py         # ccxt — pending decision, Section 3
-│   ├── news_source.py
-│   ├── main.py
+│   ├── models.py
+│   ├── resilience.py            # retry with backoff
+│   ├── price_sources/           # base.py · mt5.py  (ccxt.py later — pending decision, Section 3)
+│   ├── news_sources/            # base.py · forexfactory.py · fmp.py
+│   ├── storage/                 # base.py · oracle.py · preview.py (--dry-run CSVs)
+│   ├── tests/
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── preview_output/          ← created by --dry-run, gitignored
@@ -758,7 +766,7 @@ quantora/
 
 - **Broker**: Deriv, via MT5 (`MetaTrader5` Python package)
 - **Crypto** (if not using Deriv CFDs): `ccxt` — decision pending, Section 3
-- **Database**: SQL Server (current), `pyodbc` — Oracle documented as fallback, Section 11
+- **Database**: Oracle (current), `python-oracledb` thin mode — SQL Server documented as fallback, Section 11
 - **Indicators**: `pandas-ta` or `TA-Lib`
 - **Economic calendar**: Finnhub or FinancialModelingPrep free-tier APIs
 - **Alerts**: Telegram Bot API — trading alerts and system-health alerts

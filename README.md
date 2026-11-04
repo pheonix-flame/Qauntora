@@ -7,7 +7,7 @@ The full design is in [`design_doc/Quantora_Specification.md`](design_doc/Quanto
 
 | Engine | Status |
 |---|---|
-| `sql/`: SQL Server schema (Oracle fallback) | done |
+| `sql/`: Oracle schema (SQL Server kept as a documented fallback) | done |
 | `quantora_feed/`: price history and economic calendar | done |
 | Backtest harness, Core, Validate, Notify, Sentinel, Calibrate, Dashboard | not started (see spec Section 17) |
 
@@ -23,7 +23,7 @@ All of this is free except an optional VPS.
 | 2 | **Deriv account + MT5 demo account** | Price data now; execution later | [deriv.com](https://deriv.com) → Trader's Hub → switch to **Demo** → add an MT5 account. Pick an account type that includes both synthetics and forex/crypto, or note that you have two logins. |
 | 3 | **MT5 desktop terminal** | The Python package drives it | Download from Deriv's MT5 page, then log in with your MT5 login, password and server. |
 | 4 | **Python 3.11 or 3.12, 64-bit** | Runtime | python.org. Tick "Add to PATH". |
-| 5 | **SQL Server Express + ODBC Driver 18** | Database | Microsoft's site: "SQL Server Express" and "ODBC Driver 18 for SQL Server". SSMS is optional for browsing. Express's 10 GB cap is far more than M15 bars need. |
+| 5 | **Oracle AI Database Free** (formerly 23ai Free) | Database | [oracle.com/database/free](https://www.oracle.com/database/free/get-started/) → Windows download → run `setup.exe` and choose a password for SYS/SYSTEM. It's free, runs on the same PC as MT5, and its storage cap is far more than M15 bars need (about 350k rows per year for all 10 symbols). No Oracle Client install is needed: Python connects with `python-oracledb` in thin mode. Optional GUI: SQL Developer, or its VS Code extension. |
 | 6 | **Telegram bot token** | Quantora Notify (step 5) | In Telegram, message **@BotFather** → `/newbot` → copy the token. To get your chat id, message your bot, then open `https://api.telegram.org/bot<TOKEN>/getUpdates`. |
 
 ### "API keys": what you actually need
@@ -46,19 +46,32 @@ pip install -r requirements.txt
 copy .env.example .env      # then edit .env: MT5_LOGIN / MT5_PASSWORD / MT5_SERVER
 ```
 
-Create the database once, in SSMS or with `sqlcmd -S localhost\SQLEXPRESS -E -Q "CREATE DATABASE quantora"`. Then:
+Create a `quantora` database user once. Open a Command Prompt and connect to the pluggable database as an admin:
+
+```powershell
+sqlplus sys@localhost:1521/FREEPDB1 as sysdba
+```
+
+```sql
+CREATE USER quantora IDENTIFIED BY "choose-a-password"
+  DEFAULT TABLESPACE users QUOTA UNLIMITED ON users;
+GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, CREATE VIEW TO quantora;
+EXIT
+```
+
+Put that password in `.env` as `ORACLE_PASSWORD` (`ORACLE_DSN` defaults to `localhost:1521/FREEPDB1`). Then:
 
 ```powershell
 python main.py check                     # MT5 login, symbol names + lot specs, broker clock, DB, news
-python main.py init-db                   # creates the 8 qtx_ tables
+python main.py init-db                   # creates the 8 qtx_ tables in your quantora schema
 python main.py backfill --days 30 --dry-run --symbols V75   # preview as CSV first
-python main.py backfill --days 365       # real history into SQL Server
+python main.py backfill --days 365       # real history into Oracle
 python main.py run                       # keep it updated every M15 close (Ctrl+C to stop)
 ```
 
 `check` prints the minimum lot, contract size and tick value for every symbol on your account. Use it to confirm the Section 13 capital numbers against your real specs. If a symbol shows `NOT FOUND`, it suggests similar names. Set `QTX_BROKER_NAME_<KEY>` in `.env` to the right one.
 
-Tests run on any OS (MT5 and SQL Server are faked):
+Tests run on any OS (MT5 and Oracle are faked):
 
 ```bash
 cd quantora_feed && python -m pytest -q
@@ -77,7 +90,7 @@ quantora_feed/
 ├── resilience.py        retry with exponential backoff
 ├── price_sources/       base.py (PriceSource) · mt5.py · __init__.py (registry; add ccxt.py here later)
 ├── news_sources/        base.py (NewsProvider) · forexfactory.py · fmp.py · __init__.py (registry)
-├── storage/             base.py (Store) · sqlserver.py · preview.py (--dry-run CSVs) · __init__.py
+├── storage/             base.py (Store) · oracle.py · preview.py (--dry-run CSVs) · __init__.py
 └── tests/               fake MT5 terminal + unit tests
 ```
 
@@ -88,5 +101,7 @@ This splits the flat `mt5_source.py` / `news_source.py` / `db.py` from spec Sect
 - **Only closed bars are stored.** The still-forming candle is never written.
 - **Timestamps are true UTC.** The broker clock offset is auto-detected from a live V75 tick (synthetics tick 24/7) and logged. If your server observes DST, set `BROKER_TZ` so history across DST changes converts correctly.
 - **`price_side = 'BID'`**, because MT5 bars are bid-based. Volume is MT5 tick volume.
-- **Inserts are insert-only and idempotent.** Re-running a backfill never edits a stored row, so `loaded_at` stays the true first-insert time.
+- **Inserts are insert-only and idempotent** (`MERGE … WHEN NOT MATCHED THEN INSERT`). Re-running a backfill never edits a stored row, so `loaded_at` stays the true first-insert time.
+- **Audit timestamps are UTC.** Schema defaults use `SYS_EXTRACT_UTC(SYSTIMESTAMP)`. Plain `SYSTIMESTAMP` would record the database server's local time.
+- **Oracle Cloud instead of local?** An Always Free Autonomous Database also works. Set `ORACLE_DSN` to its service name and `ORACLE_WALLET_DIR` / `ORACLE_WALLET_PASSWORD` to the unzipped wallet. Local is simpler, since MT5 already has to run on your PC.
 - **MT5 single-owner rule (Section 10):** until Sentinel exists, Feed is the only MT5 user. When Sentinel is built, Feed's live loop moves behind Sentinel's connection.

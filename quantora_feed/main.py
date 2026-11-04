@@ -1,7 +1,7 @@
 """Quantora Feed — command-line entry point.
 
     python main.py check                 # verify broker login, symbols, broker clock, DB, news
-    python main.py init-db               # create the qtx_ tables in SQL Server (once)
+    python main.py init-db               # create the qtx_ tables in Oracle (once)
     python main.py backfill --days 365   # pull history for every configured symbol
     python main.py once                  # one incremental cycle (for Task Scheduler / cron)
     python main.py run                   # loop forever, waking just after each M15 close
@@ -70,10 +70,9 @@ def cmd_check(cfg: FeedConfig) -> int:
 
     print("\n== Database ==")
     try:
-        from storage.sqlserver import SqlServerStore
-        with SqlServerStore(cfg.db.conn_str) as store:
-            print(store.ping())
-            print("Schema present." if store.table_exists("qtx_ohlcv")
+        with open_store(cfg) as store:
+            print(store.describe())
+            print("Schema present." if store.schema_exists()
                   else "Schema missing — run: python main.py init-db")
     except Exception as exc:  # noqa: BLE001
         ok = False
@@ -93,8 +92,7 @@ def cmd_check(cfg: FeedConfig) -> int:
 
 
 def cmd_init_db(cfg: FeedConfig) -> int:
-    from storage.sqlserver import SqlServerStore
-    with SqlServerStore(cfg.db.conn_str) as store:
+    with open_store(cfg) as store:
         created = store.init_schema(cfg.schema_file)
     log.info("%s (%s)", "Schema created" if created else "Schema already exists — nothing done", cfg.schema_file)
     return 0
@@ -155,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check", help="verify broker, symbols, DB and news setup")
-    sub.add_parser("init-db", help="create qtx_ tables in SQL Server")
+    sub.add_parser("init-db", help="create qtx_ tables in Oracle")
     for name, help_ in [("backfill", "pull N days of history"), ("once", "one incremental cycle"),
                         ("run", "loop forever on every M15 close")]:
         p = sub.add_parser(name, help=help_)
