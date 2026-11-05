@@ -697,6 +697,15 @@ quantora/
 │   ├── .env.example
 │   └── preview_output/          ← created by --dry-run, gitignored
 │
+├── quantora_backtest/           ← built (step 2): reads qtx_ohlcv only, never writes
+│   ├── main.py · runner.py · settings.toml
+│   ├── simulator.py             # triple barrier on the M15 path, costs, pessimistic fills
+│   ├── walk_forward.py          # purged walk-forward + embargo, configs counted (Section 8)
+│   ├── baselines.py             # random entry, always long, buy & hold (Section 8)
+│   ├── metrics.py · gate.py · timeframes.py · indicators.py
+│   ├── strategies/              # plugin interface; Core's confluence logic is judged here too
+│   └── data_sources/            # oracle.py (read-only) · csv_dir.py
+│
 ├── quantora_core/
 │   ├── config.py
 │   ├── db.py
@@ -771,6 +780,7 @@ quantora/
 - **Economic calendar**: Finnhub or FinancialModelingPrep free-tier APIs
 - **Alerts**: Telegram Bot API — trading alerts and system-health alerts
 - **Dashboard**: FastAPI (backend) + HTML/Jinja2 templates, read-only
+- **Timeframe alignment (decided)**: H1/H4/D1 buckets aligned to UTC, W1 starts Monday 00:00 UTC — used by the backtester and to be used identically by Core.
 - **Scheduling**: cron to start; Airflow only if pipeline complexity later justifies it
 
 ---

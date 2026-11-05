@@ -87,7 +87,7 @@ class OracleStore(Store):
                 raise RuntimeError("python-oracledb is not installed (pip install oracledb).") from exc
             driver = oracledb
         if not cfg.password:
-            raise ValueError("ORACLE_PASSWORD is empty — set it in quantora_feed/.env")
+            raise ValueError("ORACLE_PASSWORD is empty — set it in Qauntora/.env")
         self._db = driver
         params = {"user": cfg.user, "password": cfg.password, "dsn": cfg.dsn}
         if cfg.wallet_dir:

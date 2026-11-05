@@ -3,13 +3,14 @@
 A patient, multi-asset signal and execution system for Forex, Gold, Synthetic Indices and Crypto on Deriv MT5.
 The full design is in [`design_doc/Quantora_Specification.md`](design_doc/Quantora_Specification.md).
 
-**Status:** Build-order step 1 (Quantora Feed + schema) is done. Nothing in this repo places trades yet.
+**Status:** Build-order steps 1–2 (Feed + schema, backtesting harness) are done. Nothing in this repo places trades yet.
 
 | Engine | Status |
 |---|---|
 | `sql/`: Oracle schema (SQL Server kept as a documented fallback) | done |
 | `quantora_feed/`: price history and economic calendar | done |
-| Backtest harness, Core, Validate, Notify, Sentinel, Calibrate, Dashboard | not started (see spec Section 17) |
+| `quantora_backtest/`: purged walk-forward harness, baselines, promotion gate | done |
+| Core, Validate, Notify, Sentinel, Calibrate, Dashboard | not started (see spec Section 17) |
 
 ---
 
@@ -35,16 +36,28 @@ All of this is free except an optional VPS.
 
 ---
 
+## Where you enter passwords and settings
+
+There are only **two files you edit**:
+
+| File | What goes in it | Secret? |
+|---|---|---|
+| `Qauntora/.env` (copy it from `Qauntora/.env.example`) | MT5 login/password/server, Oracle password, optional API keys. **One file for every engine.** Each line says where to get the value. | yes, gitignored, never committed |
+| `quantora_backtest/settings.toml` | Trading costs per symbol (pasted from Feed's `check`), mode settings, gate thresholds | no |
+
 ## Setting up Quantora Feed (Windows)
 
 ```powershell
-git clone https://github.com/pheonix-flame/Qauntora.git
-cd Qauntora\quantora_feed
-py -3.12 -m venv .venv
-.venv\Scripts\activate
+git clone -b debug/determined-babbage-63pcgv https://github.com/pheonix-flame/Qauntora.git
+cd Qauntora
+copy .env.example .env      # then edit .env: fill every line marked >>> REQUIRED
+cd quantora_feed
+py -3.12 -m venv ..\.venv
+..\.venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env      # then edit .env: MT5_LOGIN / MT5_PASSWORD / MT5_SERVER
 ```
+
+One virtual environment (`Qauntora\.venv`) serves every engine.
 
 Create a `quantora` database user once. Open a Command Prompt and connect to the pluggable database as an admin:
 
@@ -59,7 +72,7 @@ GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, CREATE VIEW TO quantora;
 EXIT
 ```
 
-Put that password in `.env` as `ORACLE_PASSWORD` (`ORACLE_DSN` defaults to `localhost:1521/FREEPDB1`). Then:
+Put that password in `Qauntora/.env` as `ORACLE_PASSWORD` (`ORACLE_DSN` defaults to `localhost:1521/FREEPDB1`). Then:
 
 ```powershell
 python main.py check                     # MT5 login, symbol names + lot specs, broker clock, DB, news
@@ -111,6 +124,45 @@ It checks four independent things. Each catches mistakes the others can't:
 Results are `ok` / `WARN` (worth a look, often a holiday or Feed not running) / `FAIL` (don't build on this data). The exit code is 1 on any FAIL. Checks that can't run show `skip`, never a false `ok`.
 
 It also prints the last 3 candles per symbol in **UTC and broker time**. Open the MT5 chart on M15 and hover those candles: the prices should match exactly at the broker-time column. That's the quickest check by eye.
+
+## Backtesting: `quantora_backtest/`
+
+Build step 2. It answers one question about any strategy: **is there evidence of an edge, after costs, that beats luck?** It only reads `qtx_ohlcv`; it never writes to the database and never touches MT5. It runs on any OS.
+
+```powershell
+cd Qauntora\quantora_backtest
+pip install -r requirements.txt          # same .venv as Feed
+python main.py demo                      # no DB needed: proves the harness finds no edge in random data
+python main.py check                     # history per symbol, which modes have enough data, costs set?
+python main.py run --symbol V75 --mode SWING
+```
+
+Before `run`, paste the cost lines from Feed's `python main.py check` under `[costs]` in `settings.toml`. A symbol without costs is refused, because a cost-free backtest overstates results.
+
+**History needed:** SWING needs at least 363 days for one walk-forward fold. More history gives more folds and more trust, so backfill 3 years for swing work (`python main.py backfill --days 1095` in Feed; set MT5's "Max bars in chart" to Unlimited first). LONG needs about 2 years minimum, SCALP about 3 months.
+
+What a run does:
+- **Triple-barrier trades on the M15 price path.** Entry is the next bar's open after a closed-bar decision. SL/TP are set in ATRs, with a time limit per mode. Long trades pay the spread on entry and short trades on exit, plus slippage. If SL and TP fall in the same bar, it counts SL. A stop gapped through fills at the worse price.
+- **Purged walk-forward with embargo.** Parameters are picked on train data only, and only test-window trades are reported. Training trades whose outcome reaches into the test window are purged. Every configuration tried is counted.
+- **Baselines.** Random entry (200 runs, same windows, barriers and costs) gives the "beats luck?" percentile. Always-long at the strategy's own times checks whether the direction calls add anything. Buy & hold is shown for context.
+- **Metrics (Section 8).** Expectancy (R), win rate, profit factor, Sharpe, Sortino, max drawdown, Calmar and Ulcer, plus in-sample vs out-of-sample (a big drop means overfitting).
+- **Promotion gate.** At least 30 trades, positive expectancy, drawdown of 20% or less, and beating 95% of random runs. "Tier 3 beats Tier 2" is listed as not yet checkable (it needs Core).
+
+Reports are saved to `quantora_backtest/backtest_output/` as JSON plus a trades CSV. The included `ema_cross` strategy only exercises the harness and gives Core a simple benchmark to beat. **It is not Quantora's strategy, and on real data it will most likely fail the gate.** That's the harness working.
+
+```
+quantora_backtest/
+├── main.py            CLI: check / strategies / run / demo
+├── settings.toml      costs, modes, gate (you edit this)
+├── runner.py          one backtest end to end + report
+├── simulator.py       triple-barrier trade simulation with costs
+├── walk_forward.py    purged walk-forward + embargo + config counting
+├── baselines.py       random entry, always long, buy & hold
+├── metrics.py · gate.py · timeframes.py (M15 → H1/H4/D1/W1, UTC-aligned) · indicators.py
+├── strategies/        base.py (Strategy) · ema_cross.py (reference) · __init__.py (registry)
+├── data_sources/      base.py · oracle.py (read-only) · csv_dir.py (Feed --dry-run CSVs)
+└── tests/             incl. "finds no edge in a random walk" and "detects a planted edge"
+```
 
 ## How Feed is organised
 

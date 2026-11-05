@@ -1,0 +1,8 @@
+# Quantora Backtest — runs on any OS (no MT5 needed). Python 3.11+ (uses tomllib).
+pandas>=2.1
+numpy
+oracledb>=2.0        # python-oracledb, thin mode: no Oracle Client install needed
+python-dotenv>=1.0
+
+# dev / tests
+pytest>=8

@@ -51,7 +51,8 @@ def cmd_check(cfg: FeedConfig) -> int:
         for name, src in pool.connect_all().items():
             print(f"[{name}] broker clock: {src.describe_clock()}")
         print(f"{'key':8} {'src':5} {'broker symbol':24} {'min lot':>8} {'step':>7} {'contract':>9} "
-              f"{'tick val':>9} {'spread':>7}")
+              f"{'tick val':>9} {'spread pts':>10} {'spread price':>12}")
+        cost_lines = []
         for spec in cfg.symbols:
             src = pool.source_for(spec)
             info = src.symbol_specs(spec)
@@ -60,9 +61,16 @@ def cmd_check(cfg: FeedConfig) -> int:
                 hint = ", ".join(src.suggest_names(spec.broker_symbol.split()[0])) or "none"
                 print(f"{spec.key:8} {spec.source:5} {spec.broker_symbol:24} NOT FOUND — similar: {hint}")
                 continue
+            spread = round(info["spread_points"] * info["point"], info["digits"])
             print(f"{spec.key:8} {spec.source:5} {spec.broker_symbol:24} {info['volume_min']:>8} "
                   f"{info['volume_step']:>7} {info['contract_size']:>9} {info['tick_value']:>9.4g} "
-                  f"{info['spread_points']:>7}")
+                  f"{info['spread_points']:>10} {spread:>12}")
+            slippage = round(spread / 2, info["digits"] + 1)
+            cost_lines.append(f"{spec.key} = {{ spread = {spread}, slippage = {slippage} }}")
+        if cost_lines:
+            print("\nTrading costs for the backtester — paste under [costs] in quantora_backtest/settings.toml.")
+            print("(Live spread right now; run this during normal market hours. Slippage assumed = half the spread.)")
+            print("\n".join(cost_lines))
     except Exception as exc:  # noqa: BLE001
         ok = False
         print(f"FAILED: {exc}")

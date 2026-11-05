@@ -19,3 +19,6 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# Backtest outputs
+backtest_output/

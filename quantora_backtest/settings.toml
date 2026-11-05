@@ -1,0 +1,80 @@
+# =============================================================================
+#  Quantora Backtest — settings (no secrets here; passwords live in Qauntora/.env)
+#  Edit freely. Every number below is a starting assumption to be tested,
+#  not a recommendation.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+#  TRADING COSTS  >>> REQUIRED for every symbol you backtest
+#
+#  The backtester refuses to run a symbol with no entry here — a cost-free
+#  backtest lies (spec Section 12). Values are in PRICE units, not points.
+#
+#  Where to get them: run   python main.py check   in quantora_feed during
+#  normal market hours. It prints ready-made lines — paste them below.
+#
+#  spread     typical bid/ask spread
+#  slippage   extra price lost on market entries and stop-loss exits
+#  swap_long_per_day / swap_short_per_day   overnight financing in price units
+#             per day held (optional; 0 = not modelled — matters for SWING/LONG)
+# -----------------------------------------------------------------------------
+[costs]
+# V75    = { spread = 0.0, slippage = 0.0 }      # <- replace with values from `check`
+# EURUSD = { spread = 0.0, slippage = 0.0, swap_long_per_day = 0.0, swap_short_per_day = 0.0 }
+
+
+# -----------------------------------------------------------------------------
+#  MODES (spec Section 2). Same engine, different horizons.
+#  timeframe          bars the strategy decides on (rolled up from stored M15)
+#  max_hold_minutes   vertical barrier: exit at market if neither SL nor TP hit
+#  sl_atr / tp_atr    stop-loss / take-profit distance in ATRs (volatility-relative)
+#  cooldown_bars_after_loss   no new entry for this many bars after a loss (Section 9)
+#  train_days / test_days / embargo_days   purged walk-forward windows (Section 8)
+# -----------------------------------------------------------------------------
+[modes.SCALP]
+timeframe = "M15"
+max_hold_minutes = 45
+atr_period = 14
+sl_atr = 1.0
+tp_atr = 1.5
+cooldown_bars_after_loss = 2
+train_days = 60
+test_days = 20
+embargo_days = 1
+
+[modes.SWING]
+timeframe = "H4"
+max_hold_minutes = 20160          # 2 weeks
+atr_period = 14
+sl_atr = 1.5
+tp_atr = 3.0
+cooldown_bars_after_loss = 1
+train_days = 270
+test_days = 90
+embargo_days = 3
+
+[modes.LONG]
+timeframe = "D1"
+max_hold_minutes = 129600         # 90 days
+atr_period = 14
+sl_atr = 2.0
+tp_atr = 4.0
+cooldown_bars_after_loss = 1
+train_days = 540
+test_days = 180
+embargo_days = 7
+
+
+# -----------------------------------------------------------------------------
+#  PROMOTION GATE (spec Section 8) — what "good enough to demo-trade" means.
+# -----------------------------------------------------------------------------
+[gate]
+min_trades = 30                   # out-of-sample trades; fewer = not enough evidence
+min_expectancy_r = 0.0            # must be above this, net of costs
+max_drawdown_pct = 20.0           # at risk_pct per trade, compounding
+min_random_percentile = 95.0      # must beat this % of random-entry runs
+risk_pct = 1.0                    # % of equity risked per trade in the equity simulation
+
+[baselines]
+random_runs = 200                 # random-entry runs to compare against
+seed = 42

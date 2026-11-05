@@ -1,7 +1,7 @@
 """Quantora Feed — configuration.
 
-Everything secret or machine-specific comes from `quantora_feed/.env`
-(copy `.env.example` to `.env` and fill it in). Nothing here is shared with
+Everything secret or machine-specific comes from the shared `Qauntora/.env`
+(copy `Qauntora/.env.example` to `.env` and fill it in). Nothing here is shared with
 any other engine — per the spec, each engine owns its own config.
 """
 from __future__ import annotations
@@ -14,7 +14,10 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_DIR = BASE_DIR.parent
+# Settings come from quantora_feed/.env if present, then the shared Qauntora/.env.
+# (load_dotenv never overwrites a value that's already set, so the engine's own file wins.)
 load_dotenv(BASE_DIR / ".env")
+load_dotenv(REPO_DIR / ".env")
 
 
 def _env(name: str, default: str = "") -> str:
