@@ -34,6 +34,7 @@ class BacktestReport:
     data_first: pd.Timestamp
     data_last: pd.Timestamp
     risk_pct: float = 1.0
+    tiers: dict | None = None
 
     @property
     def passed(self) -> bool:
@@ -51,6 +52,7 @@ class BacktestReport:
             "risk_pct_per_trade": self.risk_pct,
             "out_of_sample": self.oos_metrics,
             "in_sample_avg_expectancy_r": self.in_sample_expectancy_r,
+            "tier3_vs_tier2": self.tiers,
             "baselines": {"random_entry": self.random, "always_long": self.always_long,
                           "buy_and_hold": self.buy_and_hold},
             "folds": [{"fold": f.fold.index, "train": [str(f.fold.train_start), str(f.fold.train_end)],
@@ -77,7 +79,14 @@ def run_backtest(cfg: BacktestConfig, m15: pd.DataFrame, symbol: str, mode_name:
     bars = rollup(m15, mode.timeframe)
     wf = walk_forward.run(strategy, m15, bars, mode, cost)
     oos = metrics.compute(wf.oos_trades, cfg.gate.risk_pct, wf.oos_days)
-    tested = [f.train_expectancy_r for f in wf.folds if f.params is not None]
+    tested = [f.train_expectancy_r for f in wf.folds if f.params is not None and f.train_expectancy_r is not None]
+    tiers = None
+    if hasattr(strategy, "tier_variant"):
+        wf2 = walk_forward.run(strategy.tier_variant(), m15, bars, mode, cost)
+        tiers = {"tier3_trades": int(len(wf.oos_trades)),
+                 "tier3_expectancy_r": _r(wf.oos_trades["r"].mean()) if len(wf.oos_trades) else None,
+                 "tier2_trades": int(len(wf2.oos_trades)),
+                 "tier2_expectancy_r": _r(wf2.oos_trades["r"].mean()) if len(wf2.oos_trades) else None}
     rand = baselines.random_entry(m15, bars, mode, cost, wf, runs or cfg.random_runs,
                                   cfg.seed if seed is None else seed)
     return BacktestReport(
@@ -85,7 +94,7 @@ def run_backtest(cfg: BacktestConfig, m15: pd.DataFrame, symbol: str, mode_name:
         in_sample_expectancy_r=_r(np.mean(tested)) if tested else None,
         random=rand, always_long=baselines.always_long(m15, mode, cost, wf),
         buy_and_hold=baselines.buy_and_hold(m15, wf),
-        rules=gate.evaluate(oos, rand, cfg.gate),
+        rules=gate.evaluate(oos, rand, cfg.gate, tiers), tiers=tiers,
         data_first=m15["bar_ts"].iloc[0], data_last=m15["bar_ts"].iloc[-1], risk_pct=cfg.gate.risk_pct)
 
 

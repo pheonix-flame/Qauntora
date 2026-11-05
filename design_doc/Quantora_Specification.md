@@ -706,16 +706,19 @@ quantora/
 │   ├── strategies/              # plugin interface; Core's confluence logic is judged here too
 │   └── data_sources/            # oracle.py (read-only) · csv_dir.py
 │
-├── quantora_core/
-│   ├── config.py
-│   ├── db.py
+├── quantora_core/               ← built (step 3)
+│   ├── config.py · settings.toml
 │   ├── indicators.py            # dimension-based set, Section 5
-│   ├── confluence.py
-│   ├── state_machine.py         # Watching / Forming / Confirmed
+│   ├── confluence.py            # conditions, score, tiers, notes, snapshot
+│   ├── state_machine.py         # Watching / Forming / Confirmed transitions
 │   ├── news_filter.py
-│   ├── live_price_poll.py       # Scalp-mode Tier 2 polling, Section 2
+│   ├── engine.py                # live evaluation (with catch-up) + replay — same code path
+│   ├── diagnose.py              # correlation / VIF of indicator votes, Section 5
+│   ├── timeframes.py            # same UTC alignment as the backtester
+│   ├── storage/                 # oracle.py · local.py (CSV + JSON, no DB)
 │   ├── main.py
 │   └── requirements.txt
+│   (live_price_poll.py for Scalp Tier 2 — deferred to Sentinel's MT5 gateway, Section 10)
 │
 ├── quantora_validate/
 │   ├── config.py

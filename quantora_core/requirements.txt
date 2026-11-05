@@ -1,0 +1,8 @@
+# Quantora Core — runs on any OS (no MT5 needed; reads prices Feed stored). Python 3.11+.
+pandas>=2.1
+numpy
+oracledb>=2.0        # python-oracledb, thin mode: no Oracle Client install needed
+python-dotenv>=1.0
+
+# dev / tests
+pytest>=8

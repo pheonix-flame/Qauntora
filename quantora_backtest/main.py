@@ -70,8 +70,9 @@ def print_report(rep: BacktestReport) -> None:
         if f.params is None:
             print(f"  fold {f.fold.index}: {f.note}")
             continue
+        train_r = f"{f.train_expectancy_r:+.3f}R" if f.train_expectancy_r is not None else "—"
         print(f"  fold {f.fold.index}: test {f.fold.test_start:%Y-%m-%d}→{f.fold.test_end:%Y-%m-%d}  "
-              f"params {f.params}  train {f.train_trades} trades {f.train_expectancy_r:+.3f}R  →  "
+              f"params {f.params or '(fixed)'}  train {f.train_trades} trades {train_r}  →  "
               f"test {f.test_trades} trades " +
               (f"{f.test_expectancy_r:+.3f}R" if f.test_expectancy_r is not None else "—"))
     print(f"  configurations evaluated: {wf.configs_evaluated}  (overfitting guard — more tries, more luck)")
@@ -87,8 +88,10 @@ def print_report(rep: BacktestReport) -> None:
               f"max drawdown {m['max_drawdown_pct']}%   Sharpe {m['sharpe']}   Sortino {m['sortino']}   "
               f"Calmar {m['calmar']}   Ulcer {m['ulcer_index']}")
         if rep.in_sample_expectancy_r is not None:
-            print(f"  in-sample (train) average was {rep.in_sample_expectancy_r:+.3f} R — a big drop from train "
-                  "to test is the classic sign of overfitting")
+            drop = rep.in_sample_expectancy_r - m["expectancy_r"]
+            print(f"  in-sample (train) average was {rep.in_sample_expectancy_r:+.3f} R" +
+                  (f" — a {drop:.2f} R drop from train to test: the classic sign of overfitting" if drop > 0.2 else
+                   " — no big drop from train to test"))
 
     r, al, bh = rep.random, rep.always_long, rep.buy_and_hold
     print("\nBaselines (same windows, barriers and costs):")
@@ -100,6 +103,11 @@ def print_report(rep: BacktestReport) -> None:
         print("  random entry: n/a")
     if al.get("expectancy_r") is not None:
         print(f"  always long at the strategy's times: {al['expectancy_r']:+.3f} R over {al['trades']} trades")
+    if rep.tiers:
+        t = rep.tiers
+        fmt = lambda x: f"{x:+.3f} R" if x is not None else "n/a"  # noqa: E731
+        print(f"  Tier 2 entries (acting early): {fmt(t['tier2_expectancy_r'])} over {t['tier2_trades']} trades  "
+              f"vs Tier 3: {fmt(t['tier3_expectancy_r'])} over {t['tier3_trades']}")
     if bh.get("return_pct") is not None:
         print(f"  buy & hold over the test period: {bh['return_pct']}% (max drawdown {bh['max_drawdown_pct']}%)")
 
@@ -116,11 +124,12 @@ def cmd_run(cfg: BacktestConfig, args) -> int:
     try:
         with open_source(cfg, args.csv_dir) as src:
             m15 = src.load_m15(symbol)
-        rep = run_backtest(cfg, m15, symbol, args.mode, get_strategy(args.strategy), args.runs, args.seed)
+        kwargs = {"path": args.signals, "symbol": symbol, "mode": args.mode} if args.strategy == "core_signals" else {}
+        rep = run_backtest(cfg, m15, symbol, args.mode, get_strategy(args.strategy, **kwargs), args.runs, args.seed)
     except MissingCostError as exc:
         print(f"\nCan't run: {exc}")
         return 2
-    except LookupError as exc:
+    except (LookupError, ValueError, FileNotFoundError) as exc:
         print(f"\nCan't run: {exc}")
         return 2
     print_report(rep)
@@ -152,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "run":
             r.add_argument("--symbol", required=True, help="e.g. V75")
             r.add_argument("--csv-dir", help="read Feed --dry-run CSVs from this folder instead of Oracle")
+            r.add_argument("--signals", help="Core replay CSV (for --strategy core_signals)")
         r.add_argument("--mode", default="SWING", choices=["SCALP", "SWING", "LONG"])
         r.add_argument("--strategy", default="ema_cross", choices=sorted(REGISTRY))
         r.add_argument("--runs", type=int, help="random-baseline runs (default from settings.toml)")

@@ -3,14 +3,15 @@
 A patient, multi-asset signal and execution system for Forex, Gold, Synthetic Indices and Crypto on Deriv MT5.
 The full design is in [`design_doc/Quantora_Specification.md`](design_doc/Quantora_Specification.md).
 
-**Status:** Build-order steps 1–2 (Feed + schema, backtesting harness) are done. Nothing in this repo places trades yet.
+**Status:** Build-order steps 1–3 (Feed + schema, backtesting harness, Core) are done. Nothing in this repo places trades yet: Core *suggests*, and execution (Sentinel) is step 7.
 
 | Engine | Status |
 |---|---|
 | `sql/`: Oracle schema (SQL Server kept as a documented fallback) | done |
 | `quantora_feed/`: price history and economic calendar | done |
 | `quantora_backtest/`: purged walk-forward harness, baselines, promotion gate | done |
-| Core, Validate, Notify, Sentinel, Calibrate, Dashboard | not started (see spec Section 17) |
+| `quantora_core/`: three-tier confluence engine (Watching / Forming / Confirmed) | done |
+| Validate, Notify, Sentinel, Calibrate, Dashboard | not started (see spec Section 17) |
 
 ---
 
@@ -44,6 +45,7 @@ There are only **two files you edit**:
 |---|---|---|
 | `Qauntora/.env` (copy it from `Qauntora/.env.example`) | MT5 login/password/server, Oracle password, optional API keys. **One file for every engine.** Each line says where to get the value. | yes, gitignored, never committed |
 | `quantora_backtest/settings.toml` | Trading costs per symbol (pasted from Feed's `check`), mode settings, gate thresholds | no |
+| `quantora_core/settings.toml` (optional) | Which symbols/modes Core watches (default: V75 SWING), indicator settings | no |
 
 ## Setting up Quantora Feed (Windows)
 
@@ -163,6 +165,48 @@ quantora_backtest/
 ├── data_sources/      base.py · oracle.py (read-only) · csv_dir.py (Feed --dry-run CSVs)
 └── tests/             incl. "finds no edge in a random walk" and "detects a planted edge"
 ```
+
+## Signals: `quantora_core/`
+
+Build step 3, the three-tier engine from spec Section 4. It runs on any OS, reads the prices Feed stored, and needs no MT5.
+
+```powershell
+cd Qauntora\quantora_core
+pip install -r requirements.txt          # same .venv
+python main.py check                     # data per pair, which config each uses
+python main.py once                      # evaluate the latest closed bar, update state, log any tier change
+python main.py status                    # current tier + human summary per pair
+python main.py run                       # keep going: wakes 60 s after every M15 close
+python main.py replay --symbol V75 --mode SWING     # history -> signals CSV for the backtester
+python main.py diagnose --symbol V75 --mode SWING   # are the indicators independent? (Section 5)
+```
+
+**How a tier is decided** (once per closed bar of the mode's timeframe, H4 for SWING):
+- **Direction:** EMA20 vs EMA50.
+- **Conditions,** checked for that direction, one per market dimension (Section 5):
+  - trend: close on the right side of EMA50
+  - strength: ADX ≥ 20 (a filter, not a direction)
+  - momentum: RSI between 50 and 70 for longs (30 to 50 for shorts), or MACD; one, not both
+  - location: price inside the Bollinger Bands (no-FOMO: it never confirms while stretched)
+  - volume: OBV with the trend (crypto only)
+- **Score:** the weighted share of conditions met, from 0 to 1.
+- **Tier 2, FORMING:** score ≥ 0.6. The notes say exactly what it's waiting for, e.g. *"Setup forming BUY (score 0.75). Watching for: a confirmed bullish close. No trade yet."*
+- **Tier 3, CONFIRMED:** score ≥ 0.8, plus a **confirming close** (the bar closes in the trade direction beyond the previous close), plus the trigger bar isn't a chase (range ≤ 2×ATR), plus **no news blackout**. A blackout is 30 min before to 15 min after a high-impact event for the symbol's currencies; synthetics are exempt. It records entry, SL and TP using the same ATR multiples as the backtester. Lot size is left for Sentinel, which knows the live balance.
+- **Tier 1, WATCHING:** everything else, including indicator warm-up.
+
+**What it writes:** only `qtx_signal_state` (one current row per pair) and `qtx_signals` (an append-only row for every tier change, with the full indicator snapshot as JSON). A confirmed state that lasts several bars is one signal, not one per bar. If Core was offline, the next run catches up and logs the changes it missed. If the latest bar isn't fully stored yet, Core waits for Feed instead of evaluating a half-built candle.
+
+**Config:** the `[defaults]` in `quantora_core/settings.toml` are used until a row in `qtx_config_versions` for that symbol/mode has `approved_flag = 'Y'`. Calibrate (step 9) will propose those rows and you approve them. `check` and every snapshot say which config was used.
+
+**Testing Core honestly:** `replay` runs the *same* code over history and writes every tier change to `core_output/replay_V75_SWING.csv`. Then, from `quantora_backtest`:
+
+```powershell
+python main.py run --symbol V75 --mode SWING --strategy core_signals --signals ..\quantora_core\core_output\replay_V75_SWING.csv
+```
+
+That applies the same costs, walk-forward, random baseline and gate as everything else. It also fills the gate's **"Tier 3 beats Tier 2"** rule (Section 4): hypothetical entries at Tier 2 versus actual Tier 3 entries. If waiting doesn't pay for a symbol, the gate says so.
+
+**Not in this step:** Scalp mode's live-price polling between M15 closes (Section 2). It needs live prices from MT5, and spec Section 10 makes Sentinel the only MT5 connection, so it comes with Sentinel. Scalp still works on closed M15 bars.
 
 ## How Feed is organised
 

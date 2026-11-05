@@ -1,0 +1,122 @@
+# =============================================================================
+#  Quantora Core — settings (no secrets here; passwords live in Qauntora/.env)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+#  WHAT TO WATCH: symbol = [modes]. Spec Section 17 says start with V75 Swing
+#  only; add more once that has proven itself through the backtest gate.
+#  Keys must match Feed's symbol keys (V75, V100, STEP, EURUSD, ..., BTCUSD, ETHUSD).
+# -----------------------------------------------------------------------------
+[universe]
+V75 = ["SWING"]
+# EURUSD = ["SWING"]
+# BTCUSD = ["SWING", "LONG"]
+
+# Asset class decides whether OBV volume counts (crypto only) and which news
+# matters. Symbols not listed here are treated as SYNTHETIC (no news, no volume).
+[asset_class]
+V75 = "SYNTHETIC"
+V100 = "SYNTHETIC"
+STEP = "SYNTHETIC"
+EURUSD = "FOREX"
+GBPUSD = "FOREX"
+USDJPY = "FOREX"
+AUDUSD = "FOREX"
+XAUUSD = "FOREX"
+BTCUSD = "CRYPTO"
+ETHUSD = "CRYPTO"
+
+# -----------------------------------------------------------------------------
+#  MODES. Keep sl_atr / tp_atr equal to quantora_backtest/settings.toml so the
+#  suggested stops here are the ones the backtest measured.
+#  lookback_bars: how much history each live evaluation uses (indicator warm-up).
+# -----------------------------------------------------------------------------
+[modes.SCALP]
+timeframe = "M15"
+lookback_bars = 1500
+atr_period = 14
+sl_atr = 1.0
+tp_atr = 1.5
+
+[modes.SWING]
+timeframe = "H4"
+lookback_bars = 1500
+atr_period = 14
+sl_atr = 1.5
+tp_atr = 3.0
+
+[modes.LONG]
+timeframe = "D1"
+lookback_bars = 1000
+atr_period = 14
+sl_atr = 2.0
+tp_atr = 4.0
+
+# -----------------------------------------------------------------------------
+#  DEFAULT CONFLUENCE CONFIG — used for any symbol/mode WITHOUT an approved row
+#  in qtx_config_versions. Once Calibrate proposes a config and you approve it
+#  (approved_flag = 'Y'), that row wins. Core always logs which one it used.
+#
+#  Score = weighted share of conditions met for the trend's direction (0..1):
+#    trend     close on the trend side of the slow EMA (direction = fast vs slow EMA)
+#    strength  ADX >= adx_min (is there a trend worth trading at all?)
+#    momentum  RSI between 50 and rsi_extreme in the trend direction (or MACD histogram)
+#    location  price inside the Bollinger Bands — not stretched (no-FOMO)
+#    volume    OBV rising/falling with the trend (CRYPTO only)
+#  Tier 2 (FORMING):   score >= tier2_threshold
+#  Tier 3 (CONFIRMED): score >= tier3_threshold AND a confirming close
+#                      (bar closes in the trade direction beyond the previous close)
+#                      AND the trigger bar isn't a chase (range <= chase_atr x ATR)
+#                      AND no high-impact news blackout.
+# -----------------------------------------------------------------------------
+[defaults]
+tier2_threshold = 0.6
+tier3_threshold = 0.8
+
+[defaults.weights]
+trend = 1.0
+strength = 1.0
+momentum = 1.0
+location = 1.0
+volume = 0.5
+
+[defaults.params]
+ema_fast = 20
+ema_slow = 50
+adx_period = 14
+adx_min = 20.0
+momentum = "RSI"        # "RSI" or "MACD" — one, not both (spec Section 5)
+rsi_period = 14
+rsi_extreme = 70.0      # long needs 50 < RSI < 70; short needs 30 < RSI < 50
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+bb_period = 20
+bb_std = 2.0
+obv_slope_bars = 10
+chase_atr = 2.0
+
+# -----------------------------------------------------------------------------
+#  NEWS BLACKOUT — no new Tier 3 around HIGH-impact events for these currencies.
+#  Synthetics have no currencies: never blacked out.
+# -----------------------------------------------------------------------------
+[news]
+blackout_before_minutes = 30
+blackout_after_minutes = 15
+
+[news.currencies]
+EURUSD = ["EUR", "USD"]
+GBPUSD = ["GBP", "USD"]
+USDJPY = ["USD", "JPY"]
+AUDUSD = ["AUD", "USD"]
+XAUUSD = ["USD"]
+BTCUSD = ["USD"]
+ETHUSD = ["USD"]
+
+# -----------------------------------------------------------------------------
+#  LIVE LOOP
+# -----------------------------------------------------------------------------
+[run]
+seconds_after_bar_close = 60   # let Feed (20 s) store the bar first
+# If the newest stored M15 bar is older than this, the data is stale: skip and warn.
+max_feed_lag_minutes = 45

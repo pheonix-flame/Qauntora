@@ -97,12 +97,16 @@ def run(strategy: Strategy, m15: pd.DataFrame, bars: pd.DataFrame, mode: ModePro
     param_sets = strategy.param_sets()
     signals = {i: attach_atr(strategy.signals(bars, p), bars, mode.atr_period) for i, p in enumerate(param_sets)}
 
+    fixed = len(param_sets) == 1  # nothing to tune (e.g. Core's replayed signals): every fold is tested
     results, oos, chosen = [], [], {}
     for fold in folds:
         best, best_score, best_n = None, -np.inf, 0
         for i in range(len(param_sets)):
             tr = purge(simulate(m15, signals[i], mode, cost, (fold.train_start, fold.train_end)), fold.test_start)
-            if len(tr) >= min_train_trades and tr["r"].mean() > best_score:
+            if fixed:
+                best, best_n = 0, len(tr)
+                best_score = float(tr["r"].mean()) if len(tr) else None
+            elif len(tr) >= min_train_trades and tr["r"].mean() > best_score:
                 best, best_score, best_n = i, float(tr["r"].mean()), len(tr)
         if best is None:
             results.append(FoldResult(fold, None, 0, None, 0, None,
@@ -112,7 +116,8 @@ def run(strategy: Strategy, m15: pd.DataFrame, bars: pd.DataFrame, mode: ModePro
         chosen[fold.index] = signals[best]
         oos.append(te.assign(fold=fold.index))
         results.append(FoldResult(fold, param_sets[best], best_n, best_score, len(te),
-                                  float(te["r"].mean()) if len(te) else None))
+                                  float(te["r"].mean()) if len(te) else None,
+                                  "fixed config — nothing tuned" if fixed else ""))
 
     oos_trades = pd.concat(oos, ignore_index=True) if oos else pd.DataFrame(columns=TRADE_COLUMNS + ["fold"])
     tested = [r.fold for r in results if r.params is not None]
