@@ -38,6 +38,13 @@ from price_sources.base import PriceSource
 log = logging.getLogger("quantora.feed")
 
 _CHUNK = timedelta(days=30)
+# A tick only proves the server clock if it's live: watch it move for up to this long.
+TICK_WATCH_S = 5.0
+TICK_POLL_S = 0.5
+
+
+def _tick_ms(tick) -> int:
+    return int(getattr(tick, "time_msc", 0) or int(tick.time) * 1000)
 
 
 def _import_mt5() -> ModuleType:
@@ -111,10 +118,12 @@ class MT5Source(PriceSource):
         cfg: MT5Config,
         mt5_module: ModuleType | None = None,
         clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.cfg = cfg
         self._mt5 = mt5_module
         self._clock = clock
+        self._sleep = sleep
         self.fixed_offset_s = 0
         self.connected = False
 
@@ -135,6 +144,48 @@ class MT5Source(PriceSource):
         if self.cfg.broker_tz:
             return f"zone {self.cfg.broker_tz}"
         return f"UTC{self.fixed_offset_s / 3600:+.2f}h (auto-detected)"
+
+    def utc_to_broker_clock(self, ts: pd.Timestamp) -> pd.Timestamp:
+        if self.cfg.broker_tz:
+            return pd.Timestamp(ts).tz_localize("UTC").tz_convert(self.cfg.broker_tz).tz_localize(None)
+        return pd.Timestamp(ts) + pd.Timedelta(seconds=self.fixed_offset_s)
+
+    def _live_tick_time(self, sym: str) -> int | None:
+        """Server-clock time of a tick seen to *arrive* while we watch, else None.
+
+        A single tick can be stale by exactly N x 15 min (market paused), which would
+        look like a clean but wrong offset — so we require the tick to advance.
+        """
+        first = self.mt5.symbol_info_tick(sym)
+        if first is None or not first.time:
+            return None
+        waited = 0.0
+        while waited < TICK_WATCH_S:
+            self._sleep(TICK_POLL_S)
+            waited += TICK_POLL_S or TICK_WATCH_S  # TICK_POLL_S=0 in tests: one re-read
+            tick = self.mt5.symbol_info_tick(sym)
+            if tick is not None and _tick_ms(tick) > _tick_ms(first):
+                return int(tick.time)
+        return None
+
+    def verify_clock(self, symbols: list[SymbolSpec]) -> tuple[bool | None, str]:
+        """Compare the conversion Feed is using with a live measurement of the server clock."""
+        order = {"SYNTHETIC": 0, "CRYPTO": 1, "FOREX": 2}
+        reference = [s.broker_symbol for s in sorted(symbols, key=lambda s: order.get(s.asset_class, 9))]
+        measured = self.detect_fixed_offset_s(reference, allow_fallback=False)
+        if measured is None:
+            return None, "no fresh tick to measure the server clock (markets closed?)"
+        if self.cfg.broker_tz:
+            now = datetime.fromtimestamp(self._clock(), tz=ZoneInfo(self.cfg.broker_tz))
+            used = int(now.utcoffset().total_seconds())
+            source = f"BROKER_TZ={self.cfg.broker_tz}"
+        else:
+            used, source = self.fixed_offset_s, "auto-detected offset"
+        if used != measured:
+            return False, (f"{source} means UTC{used / 3600:+.2f}h right now, but the live tick says the "
+                           f"server clock is UTC{measured / 3600:+.2f}h — every stored timestamp is off by "
+                           f"{abs(used - measured) / 3600:.2f} h. Fix .env and re-backfill.")
+        return True, f"{source} (UTC{used / 3600:+.2f}h) agrees with the live server clock"
 
     # -- connection ---------------------------------------------------------
     def connect(self, symbols: list[SymbolSpec]) -> None:
@@ -178,20 +229,27 @@ class MT5Source(PriceSource):
             log.warning("Broker clock is not UTC. A fixed offset is wrong across DST changes in history — "
                         "set BROKER_TZ in .env if your broker observes DST.")
 
-    def detect_fixed_offset_s(self, reference_symbols: list[str]) -> int:
-        """Server-clock minus true UTC, from a fresh tick on a 24/7 symbol, rounded to 15 min."""
+    def detect_fixed_offset_s(self, reference_symbols: list[str], allow_fallback: bool = True) -> int | None:
+        """Server-clock minus true UTC, from a fresh tick on a 24/7 symbol, rounded to 15 min.
+
+        With allow_fallback=False, returns None instead of using BROKER_UTC_OFFSET_HOURS
+        when no fresh tick is available (so `verify` gets an independent measurement).
+        """
         for sym in reference_symbols:
             if not self.ensure_symbol(sym):
                 continue
-            tick = self.mt5.symbol_info_tick(sym)
-            if tick is None or not tick.time:
+            tick_time = self._live_tick_time(sym)
+            if tick_time is None:
+                log.debug("No live ticks on %s; trying next symbol", sym)
                 continue
-            diff = int(tick.time) - self._clock()
+            diff = tick_time - self._clock()
             rounded = int(round(diff / 900.0) * 900)
             if abs(diff - rounded) <= 120:
                 log.debug("Offset from %s tick: raw diff %.0fs -> %ds", sym, diff, rounded)
                 return rounded
             log.debug("Tick on %s looks stale (diff %.0fs); trying next symbol", sym, diff)
+        if not allow_fallback:
+            return None
         if self.cfg.broker_utc_offset_hours is not None:
             log.warning("No fresh tick for offset detection; using BROKER_UTC_OFFSET_HOURS=%s",
                         self.cfg.broker_utc_offset_hours)

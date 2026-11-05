@@ -40,6 +40,9 @@ class SourcePool:
             self._sources[spec.source] = src
         return src
 
+    def symbols_for(self, name: str) -> list[SymbolSpec]:
+        return list(self._by_name.get(name, []))
+
     def connect_all(self) -> dict[str, PriceSource]:
         for specs in self._by_name.values():
             self.source_for(specs[0])

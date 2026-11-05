@@ -22,8 +22,9 @@ class FakeMT5:
     15 minutes in server-clock epoch seconds, like the real terminal returns.
     """
     TIMEFRAME_M15 = 15
+    TIMEFRAME_H1 = 60
 
-    def __init__(self, clock, offset_s=0, symbols=("Volatility 75 Index", "EURUSD"), tick_lag_s=1):
+    def __init__(self, clock, offset_s=0, symbols=("Volatility 75 Index", "EURUSD"), tick_lag_s=1, live=True):
         self.clock = clock
         self.offset_s = offset_s
         self.symbols = {name: SimpleNamespace(name=name, visible=False, digits=2, point=0.01,
@@ -32,6 +33,8 @@ class FakeMT5:
                                               trade_tick_value=0.01, spread=500)
                         for name in symbols}
         self.tick_lag_s = tick_lag_s
+        self.live = live          # live: every read sees a newer tick; else the tick is frozen
+        self._tick_reads = 0
         self.range_calls = []
         self.initialized = False
 
@@ -63,22 +66,42 @@ class FakeMT5:
     def symbol_info_tick(self, name):
         if name not in self.symbols:
             return None
-        return SimpleNamespace(time=int(self.clock() + self.offset_s - self.tick_lag_s))
+        self._tick_reads += 1
+        t = int(self.clock() + self.offset_s - self.tick_lag_s)
+        ms = t * 1000 + (self._tick_reads if self.live else 0)
+        return SimpleNamespace(time=t, time_msc=ms)
+
+    @staticmethod
+    def m15_prices(times: np.ndarray):
+        """Deterministic, random-looking M15 prices for server-clock bar starts."""
+        n = times // 900
+        noise = np.modf(np.abs(np.sin(n * 12.9898) * 43758.5453))[0]
+        o = 100 + 5 * noise
+        c = o + 0.5
+        return o, o + 1, o - 1, c
 
     def copy_rates_range(self, name, timeframe, date_from, date_to):
-        self.range_calls.append((name, date_from, date_to))
+        self.range_calls.append((name, timeframe, date_from, date_to))
+        step = timeframe * 60
         server_now = self.clock() + self.offset_s
-        lo = int(date_from.timestamp()) // 900 * 900
+        lo = int(date_from.timestamp()) // step * step
         hi = min(int(date_to.timestamp()), int(server_now))
-        times = np.arange(lo, hi + 1, 900, dtype="int64")
+        times = np.arange(lo, hi + 1, step, dtype="int64")
         times = times[(times >= date_from.timestamp()) & (times <= date_to.timestamp())]
         out = np.zeros(len(times), dtype=RATE_DTYPE)
         out["time"] = times
-        out["open"] = 100 + (times % 7)
-        out["high"] = out["open"] + 1
-        out["low"] = out["open"] - 1
-        out["close"] = out["open"] + 0.5
-        out["tick_volume"] = 10
+        if timeframe == 15:
+            o, h, l, c = self.m15_prices(times)
+            vol = 10
+        else:  # H1 built from its four M15 bars, exactly like the real terminal
+            quarters = [self.m15_prices(times + q * 900) for q in range(4)]
+            o = quarters[0][0]
+            h = np.max([q[1] for q in quarters], axis=0)
+            l = np.min([q[2] for q in quarters], axis=0)
+            c = quarters[3][3]
+            vol = 40
+        out["open"], out["high"], out["low"], out["close"] = o, h, l, c
+        out["tick_volume"] = vol
         return out
 
 
@@ -91,6 +114,13 @@ class FrozenClock:
 
     def advance(self, seconds: float) -> None:
         self.t += seconds
+
+
+@pytest.fixture(autouse=True)
+def no_tick_wait(monkeypatch):
+    """Don't really sleep while watching for live ticks."""
+    import price_sources.mt5 as mt5_mod
+    monkeypatch.setattr(mt5_mod, "TICK_POLL_S", 0)
 
 
 @pytest.fixture

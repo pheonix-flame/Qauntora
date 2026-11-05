@@ -10,7 +10,8 @@ from datetime import datetime
 
 import pandas as pd
 
-BAR_MINUTES = {"M15": 15}
+# M15 is what Feed stores; H1 is only fetched by `verify` to cross-check M15.
+BAR_MINUTES = {"M15": 15, "H1": 60}
 
 OHLCV_COLUMNS = [
     "symbol", "asset_class", "timeframe", "bar_ts",

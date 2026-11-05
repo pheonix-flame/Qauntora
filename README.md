@@ -67,6 +67,7 @@ python main.py init-db                   # creates the 8 qtx_ tables in your qua
 python main.py backfill --days 30 --dry-run --symbols V75   # preview as CSV first
 python main.py backfill --days 365       # real history into Oracle
 python main.py run                       # keep it updated every M15 close (Ctrl+C to stop)
+python main.py verify --days 7           # prove the stored data is right (see below)
 ```
 
 `check` prints the minimum lot, contract size and tick value for every symbol on your account. Use it to confirm the Section 13 capital numbers against your real specs. If a symbol shows `NOT FOUND`, it suggests similar names. Set `QTX_BROKER_NAME_<KEY>` in `.env` to the right one.
@@ -76,6 +77,40 @@ Tests run on any OS (MT5 and Oracle are faked):
 ```bash
 cd quantora_feed && python -m pytest -q
 ```
+
+## What Feed collects
+
+**Only the 10 symbols configured in `quantora_feed/config.py`**, nothing else. Each is stored as **M15 candles only**. Core will build H1/H4/D1/W1 from these with queries. Feed also stores the economic calendar.
+
+| Group | Keys (stored as) | Deriv MT5 name |
+|---|---|---|
+| Synthetics | `V75`, `V100`, `STEP` | Volatility 75 Index, Volatility 100 Index, Step Index |
+| Forex | `EURUSD`, `GBPUSD`, `USDJPY`, `AUDUSD` | same |
+| Gold | `XAUUSD` | same |
+| Crypto (Deriv CFDs) | `BTCUSD`, `ETHUSD` | same |
+
+The spec's optional third crypto (e.g. SOL) is not included. To collect fewer symbols, set `QTX_SYMBOLS=V75,EURUSD` in `.env`. To add one, add a line to `_DEFAULT_SYMBOLS` in `config.py`.
+
+## Proving the data is right: `python main.py verify`
+
+The unit tests only prove the code's logic, using a fake broker. On your PC, run this after a backfill:
+
+```powershell
+python main.py verify --days 7
+```
+
+It checks four independent things. Each catches mistakes the others can't:
+
+| Layer | Needs | What it proves |
+|---|---|---|
+| **Broker clock** | MT5 | Your clock setting (auto-detected, or `BROKER_TZ`) matches the server clock measured from a live tick right now. A wrong setting shifts *every* symbol's timestamps, and the other MT5 checks can't see that. |
+| **Integrity** | DB only | No impossible candles (high below close, negative prices), timestamps on 15-minute boundaries, no candle stored before it closed. It flags gaps (forex weekends excluded), frozen prices, spikes, and a feed that has stopped. |
+| **Broker cross-check** | MT5 | Stored M15 equals a fresh pull from MT5, so nothing was lost or rounded on the way into Oracle. Your M15 candles also roll up exactly into MT5's own H1 candles, so none are missing. |
+| **Independent source** | Internet | Deriv's BTC/ETH 15-minute moves line up with Coinbase's (a different company, free API, no key) at zero time shift. That proves the stored times are true UTC. If they line up best when shifted 2 h, it says so. |
+
+Results are `ok` / `WARN` (worth a look, often a holiday or Feed not running) / `FAIL` (don't build on this data). The exit code is 1 on any FAIL. Checks that can't run show `skip`, never a false `ok`.
+
+It also prints the last 3 candles per symbol in **UTC and broker time**. Open the MT5 chart on M15 and hover those candles: the prices should match exactly at the broker-time column. That's the quickest check by eye.
 
 ## How Feed is organised
 
@@ -91,6 +126,7 @@ quantora_feed/
 ├── price_sources/       base.py (PriceSource) · mt5.py · __init__.py (registry; add ccxt.py here later)
 ├── news_sources/        base.py (NewsProvider) · forexfactory.py · fmp.py · __init__.py (registry)
 ├── storage/             base.py (Store) · oracle.py · preview.py (--dry-run CSVs) · __init__.py
+├── verification/        `verify`: integrity.py · broker.py (vs MT5) · reference.py (vs Coinbase)
 └── tests/               fake MT5 terminal + unit tests
 ```
 

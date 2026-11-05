@@ -5,6 +5,7 @@
     python main.py backfill --days 365   # pull history for every configured symbol
     python main.py once                  # one incremental cycle (for Task Scheduler / cron)
     python main.py run                   # loop forever, waking just after each M15 close
+    python main.py verify --days 7       # prove the stored data is right (see verification/)
 
 Add --dry-run to backfill/once/run to write CSVs into preview_output/ instead of the DB.
 Add --symbols V75,EURUSD to limit a run to some symbols.
@@ -147,6 +148,44 @@ def cmd_run(cfg: FeedConfig, dry_run: bool) -> int:
     return 0
 
 
+def cmd_verify(cfg: FeedConfig, days: int, dry_run: bool, use_broker: bool, use_reference: bool) -> int:
+    from verification import run_verification
+    from verification.base import Status
+
+    pool = SourcePool(cfg) if use_broker else None
+    with open_store(cfg, dry_run) as store:
+        try:
+            report = run_verification(cfg, store, pool, use_reference=use_reference, days=days)
+        finally:
+            if pool is not None:
+                pool.close()
+
+    marks = {Status.PASS: "ok  ", Status.WARN: "WARN", Status.FAIL: "FAIL", Status.SKIP: "skip"}
+    print(f"\nVerification of the last {days} days ({'preview CSVs' if dry_run else 'database'})\n")
+    current = None
+    for r in report.results:
+        if r.symbol != current:
+            current = r.symbol
+            print(f"── {r.symbol}")
+        print(f"   [{marks[r.status]}] {r.check:24} {r.detail}")
+
+    if report.samples:
+        print("\nSpot-check by eye: open the MT5 chart on M15 and hover these candles. MT5 charts show")
+        print("the broker clock, so match the 'broker_clock' column; Quantora stores the 'utc' column.\n")
+        for key, sample in report.samples.items():
+            print(f"{key}\n{sample.to_string(index=False)}\n")
+
+    counts = {s: sum(r.status == s for r in report.results) for s in Status}
+    print(f"Summary: {counts[Status.PASS]} passed, {counts[Status.WARN]} warnings, "
+          f"{counts[Status.FAIL]} failed, {counts[Status.SKIP]} skipped")
+    if report.worst == Status.FAIL:
+        print("Result: FAIL — don't build on this data until the failures above are fixed.")
+        return 1
+    print("Result: data looks right." if report.worst == Status.PASS
+          else "Result: no errors; read the warnings above.")
+    return 0
+
+
 # -- argument parsing -----------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Quantora Feed — market data engine")
@@ -161,6 +200,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--symbols", help="comma-separated keys, e.g. V75,EURUSD")
         if name == "backfill":
             p.add_argument("--days", type=int, default=None, help="days of history (default BACKFILL_DAYS)")
+    v = sub.add_parser("verify", help="check stored data against MT5 and an independent source")
+    v.add_argument("--days", type=int, default=7, help="how many days back to verify (default 7)")
+    v.add_argument("--symbols", help="comma-separated keys, e.g. V75,EURUSD")
+    v.add_argument("--dry-run", action="store_true", help="verify the preview_output/ CSVs instead of the DB")
+    v.add_argument("--no-broker", action="store_true", help="skip the MT5 cross-checks")
+    v.add_argument("--no-reference", action="store_true", help="skip the Coinbase clock check")
     return parser
 
 
@@ -183,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_sync(cfg, args.dry_run, backfill_days=args.days or cfg.backfill_days)
     if args.cmd == "once":
         return cmd_sync(cfg, args.dry_run)
+    if args.cmd == "verify":
+        return cmd_verify(cfg, args.days, args.dry_run, not args.no_broker, not args.no_reference)
     return cmd_run(cfg, args.dry_run)
 
 

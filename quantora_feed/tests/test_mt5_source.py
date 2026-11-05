@@ -97,3 +97,35 @@ def test_symbol_specs_and_suggestions(clock):
     src.connect([V75])
     assert src.symbol_specs(V75)["volume_min"] == 0.001
     assert src.suggest_names("Volatility") == ["Volatility 75 Index"]
+
+
+# -- verify_clock: the offline check that catches a wrong BROKER_TZ ------------------
+def test_verify_clock_agrees_with_auto_detected_offset(clock):
+    src = MT5Source(mt5_cfg(), mt5_module=FakeMT5(clock, offset_s=7200), clock=clock)
+    src.connect([V75])
+    ok, detail = src.verify_clock([V75])
+    assert ok is True and "UTC+2.00h" in detail
+
+
+def test_verify_clock_accepts_correct_iana_zone(clock):
+    # 3 Nov 2026: Helsinki is on winter time, UTC+2
+    src = MT5Source(mt5_cfg(broker_tz="Europe/Helsinki"), mt5_module=FakeMT5(clock, offset_s=7200), clock=clock)
+    src.connect([V75])
+    assert src.verify_clock([V75])[0] is True
+
+
+def test_verify_clock_catches_wrong_iana_zone(clock):
+    src = MT5Source(mt5_cfg(broker_tz="America/New_York"), mt5_module=FakeMT5(clock, offset_s=7200), clock=clock)
+    src.connect([V75])
+    ok, detail = src.verify_clock([V75])
+    assert ok is False and "off by 7.00 h" in detail
+
+
+def test_verify_clock_says_unknown_without_fresh_tick(clock):
+    # Frozen tick exactly 15 min old: it *looks* grid-aligned, so only liveness reveals it.
+    fake = FakeMT5(clock, offset_s=7200, tick_lag_s=900, live=False)
+    src = MT5Source(mt5_cfg(broker_utc_offset_hours=2), mt5_module=fake, clock=clock)
+    src.connect([V75])
+    assert src.fixed_offset_s == 7200  # fell back to config, not a wrong 1.75 h reading
+    ok, _ = src.verify_clock([V75])
+    assert ok is None  # doesn't silently "pass" by comparing the fallback with itself

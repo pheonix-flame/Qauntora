@@ -25,6 +25,10 @@ class Store(ABC):
     @abstractmethod
     def insert_news(self, events: list[NewsEvent]) -> int: ...
 
+    @abstractmethod
+    def load_bars(self, symbol: str, timeframe: str, start: datetime | None = None) -> pd.DataFrame:
+        """Stored bars (qtx_ohlcv columns) from `start`, oldest first. Used by `verify`."""
+
     # -- admin (used by `check` and `init-db`) -------------------------------
     def describe(self) -> str:
         return type(self).__name__

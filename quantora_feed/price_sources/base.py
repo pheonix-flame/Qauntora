@@ -41,3 +41,11 @@ class PriceSource(ABC):
 
     def describe_clock(self) -> str:
         return "UTC"
+
+    def verify_clock(self, symbols: list[SymbolSpec]) -> tuple[bool | None, str]:
+        """(ok, detail) — is the UTC conversion in use right? None = couldn't tell."""
+        return None, "source doesn't support a clock check"
+
+    def utc_to_broker_clock(self, ts: pd.Timestamp) -> pd.Timestamp:
+        """What the broker's own charts would show for a UTC time (for eyeballing)."""
+        return ts

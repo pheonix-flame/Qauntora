@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from config import DBConfig
-from models import NewsEvent
+from models import OHLCV_COLUMNS, NewsEvent
 from resilience import with_retry
 from storage.base import Store
 
@@ -126,6 +126,14 @@ class OracleStore(Store):
                     [symbol, timeframe])
         row = cur.fetchone()
         return row[0] if row and row[0] is not None else None
+
+    def load_bars(self, symbol: str, timeframe: str, start: datetime | None = None) -> pd.DataFrame:
+        cur = self.conn.cursor()
+        cols = ", ".join(OHLCV_COLUMNS)
+        cur.execute(f"SELECT {cols} FROM qtx_ohlcv WHERE symbol = :1 AND timeframe = :2 "
+                    "AND bar_ts >= :3 ORDER BY bar_ts",
+                    [symbol, timeframe, start or datetime(1970, 1, 1)])
+        return pd.DataFrame(cur.fetchall(), columns=OHLCV_COLUMNS)
 
     def insert_ohlcv(self, df: pd.DataFrame) -> int:
         if df.empty:

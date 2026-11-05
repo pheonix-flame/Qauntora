@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from models import NewsEvent
+from models import NewsEvent, empty_ohlcv
 from storage.base import Store
 
 
@@ -25,6 +25,15 @@ class PreviewStore(Store):
             return None
         existing = pd.read_csv(path, usecols=["bar_ts"], parse_dates=["bar_ts"])
         return None if existing.empty else existing["bar_ts"].max().to_pydatetime()
+
+    def load_bars(self, symbol: str, timeframe: str, start: datetime | None = None) -> pd.DataFrame:
+        path = self._ohlcv_path(symbol, timeframe)
+        if not path.exists():
+            return empty_ohlcv()
+        df = pd.read_csv(path, parse_dates=["bar_ts"])
+        if start is not None:
+            df = df[df["bar_ts"] >= pd.Timestamp(start)]
+        return df.sort_values("bar_ts").reset_index(drop=True)
 
     def insert_ohlcv(self, df: pd.DataFrame) -> int:
         if df.empty:
