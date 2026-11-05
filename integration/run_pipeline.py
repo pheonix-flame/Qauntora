@@ -16,7 +16,9 @@ Then cross-engine consistency checks:
   A  Core live log == Core replay   (live engine and history replay make identical decisions)
   B  Validate covered every entry   (every label belongs to a real Tier 3 / Tier 2 entry)
   C  Validate labels == Backtest    (two independent triple-barrier implementations agree)
-  D  Re-runs don't duplicate        (Feed, Core, Validate run again: nothing doubled)
+  D  Re-runs don't duplicate        (Feed, Core, Validate, Notify run again: nothing doubled)
+  E  Notify announced the right things (over real HTTP to a stand-in Telegram server)
+  F  Notify health alert + recovery  (pretend Feed went quiet for 5 h, then came back)
 
 Engines never import each other; this script only runs their CLIs and reads their outputs.
 """
@@ -34,6 +36,8 @@ import time
 from pathlib import Path
 
 import pandas as pd
+
+from fake_telegram import FakeTelegram
 
 ROOT = Path(__file__).resolve().parents[1]
 PY = sys.executable
@@ -94,8 +98,8 @@ def load_live(store: str, work: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         rows = [(a, b, c, d if isinstance(d, dict) else json.loads(d.read() if hasattr(d, "read") else d))
                 for a, b, c, d in cur.fetchall()]
         sig = pd.DataFrame(rows, columns=["signal_id", "tier", "direction", "snapshot"])
-        cur.execute("SELECT signal_id, outcome, r_multiple FROM qtx_signal_outcomes")
-        out = pd.DataFrame(cur.fetchall(), columns=["signal_id", "outcome", "r_multiple"])
+        cur.execute("SELECT signal_id, outcome, r_multiple, resolved_at FROM qtx_signal_outcomes")
+        out = pd.DataFrame(cur.fetchall(), columns=["signal_id", "outcome", "r_multiple", "resolved_at"])
         conn.close()
     snaps = sig["snapshot"] if "snapshot" in sig else sig["indicator_snapshot_json"].map(json.loads)
     sig["close_ts"] = pd.to_datetime(snaps.map(lambda s: s.get("close_ts")))
@@ -129,6 +133,12 @@ def main() -> int:
            "FEED_PREVIEW_DIR": str(feed_csv), "FEED_LOG_DIR": str(work / "logs"),
            "CORE_OUTPUT_DIR": str(work / "core"), "VALIDATE_OUTPUT_DIR": str(work / "validate"),
            "BACKTEST_OUTPUT_DIR": str(work / "backtest")}
+    tg = FakeTelegram()  # Notify delivers over real HTTP to this local stand-in for api.telegram.org
+    no_proxy = ",".join(x for x in (os.environ.get("NO_PROXY", ""), "127.0.0.1", "localhost") if x)
+    env.update(TELEGRAM_BOT_TOKEN="999:FAKE-integration-token", TELEGRAM_CHAT_ID="4242",
+               TELEGRAM_API_BASE=tg.url, NOTIFY_STATE_DIR=str(work / "notify"), NO_PROXY=no_proxy, no_proxy=no_proxy)
+    notify_src = ["--csv-dir", str(feed_csv), "--core-dir", str(work / "core"),
+                  "--validate-dir", str(work / "validate")] if files else []
     local_feed = ["--dry-run"] if files else []
     core_src = ["--csv-dir", str(feed_csv)] if files else []
     val_src = ["--csv-dir", str(feed_csv), "--core-dir", str(work / "core")] if files else []
@@ -154,6 +164,8 @@ def main() -> int:
          ["../integration/fake_mt5_feed.py", "backfill", "--days", "400", *local_feed], env)
     step("Feed: verify data", "quantora_feed",
          ["../integration/fake_mt5_feed.py", "verify", "--days", "30", "--no-reference", *local_feed], env, show_tail=4)
+    step("Notify: first connection", "quantora_notify", ["main.py", "once", *notify_src], env, show_tail=2)
+    hello = tg.messages()
 
     # 3-4 Core (live, with catch-up)
     now = pd.Timestamp.now("UTC").tz_localize(None)
@@ -167,6 +179,12 @@ def main() -> int:
     # 5 Validate
     step("Validate: label outcomes", "quantora_validate", ["main.py", "once", *val_src], env)
     step("Validate: report", "quantora_validate", ["main.py", "report", *val_src], env, show_tail=8)
+
+    # 5b Notify announces what's new since it connected
+    n_before = len(tg.messages())
+    notify_now = pd.Timestamp.now("UTC").tz_localize(None)
+    step("Notify: announce new signals", "quantora_notify", ["main.py", "once", *notify_src], env, show_tail=2)
+    announced = tg.messages()[n_before:]
 
     # 6-7 Replay + Backtest
     replay_csv = work / "replay_V75_SWING.csv"
@@ -224,13 +242,54 @@ def main() -> int:
          env, show_tail=2)
     step("Core: evaluate again", "quantora_core", ["main.py", "once", *core_src], env, show_tail=1)
     step("Validate: label again", "quantora_validate", ["main.py", "once", *val_src], env, show_tail=1)
+    n_rerun = len(tg.messages())
+    step("Notify: run again", "quantora_notify", ["main.py", "once", *notify_src], env, show_tail=1)
+    notify_dupes = len(tg.messages()) - n_rerun
     sig2, out2 = load_live(a.store, work)
     after = (len(sig2), len(out2), bar_count(a.store, feed_csv))
     new_bars = after[2] - before[2]
     check("D  Re-runs don't duplicate", after[0] == before[0] and after[1] >= before[1]
-          and out2["signal_id"].is_unique and 0 <= new_bars <= 2,
+          and out2["signal_id"].is_unique and 0 <= new_bars <= 2 and notify_dupes == 0,
           f"signals {before[0]}->{after[0]}, outcomes {before[1]}->{after[1]} (unique ids), "
-          f"price bars +{new_bars} (only bars that closed meanwhile)")
+          f"price bars +{new_bars} (only bars that closed meanwhile), Notify messages +{notify_dupes}")
+
+    # E — Notify said exactly what it should, to the right chat, with the right token
+    def expected_kind(r):
+        flip = isinstance(r.prev_direction, str) and r.prev_direction != r.direction
+        if r.tier == "CONFIRMED":
+            return "tier3"
+        if r.tier == "FORMING" and r.direction in ("BUY", "SELL") and (r.prev_tier == "WATCHING" or flip):
+            return "tier2"
+        if r.prev_tier == "CONFIRMED":
+            return "cancelled"
+        return None
+    kinds = [(expected_kind(r), notify_now - r.close_ts <= pd.Timedelta(hours=8)) for r in sig.itertuples()]
+    fresh = sum(1 for k, f in kinds if k and f)
+    stale = sum(1 for k, f in kinds if k and not f)
+    oc = outcomes.merge(sig[["signal_id", "tier"]], on="signal_id")
+    fresh_out = int(((oc["tier"] == "CONFIRMED") &
+                     (notify_now - pd.to_datetime(oc["resolved_at"]) <= pd.Timedelta(hours=24))).sum())
+    want_n = fresh + (1 if stale else 0) + fresh_out
+    right_dest = all(m["token"] == "999:FAKE-integration-token" and m["body"]["chat_id"] == "4242"
+                     and m["body"]["parse_mode"] == "HTML" for m in tg.messages())
+    check("E  Notify announced the right things", len(hello) == 1 and "connected" in hello[0]["body"]["text"]
+          and len(announced) == want_n and right_dest,
+          f"hello on first run; then {len(announced)} messages = {fresh} fresh signal alert(s) + "
+          f"{'1 note for ' + str(stale) + ' old catch-up changes' if stale else 'no stale note'} + "
+          f"{fresh_out} result(s); all to chat 4242 with the right token")
+
+    # F — health alert when Feed goes quiet, recovery when it's back
+    n_h = len(tg.messages())
+    later = (pd.Timestamp.now("UTC").tz_localize(None) + pd.Timedelta(hours=5)).strftime("%Y-%m-%d %H:%M")
+    step("Notify: 5 h later, Feed silent", "quantora_notify", ["main.py", "once", "--as-of", later, *notify_src],
+         env, show_tail=1)
+    alert = [m["body"]["text"] for m in tg.messages()[n_h:]]
+    step("Notify: back to now", "quantora_notify", ["main.py", "once", *notify_src], env, show_tail=1)
+    rec = [m["body"]["text"] for m in tg.messages()[n_h + len(alert):]]
+    check("F  Notify health alert + recovery",
+          len(alert) == 1 and "Feed hasn't stored a V75" in alert[0] and len(rec) == 1 and "Recovered" in rec[0],
+          f"alert: {alert[0][:70] if alert else 'none'}…; then: {rec[0][:60] if rec else 'none'}…")
+    tg.stop()
 
     gate = re.findall(r"\[(pass|FAIL|----)\] (.+?)\s{2,}(.+)", out)
     print("\nBacktest gate on simulated data (informational — simulated prices have no real edge):")

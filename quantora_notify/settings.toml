@@ -1,0 +1,37 @@
+# =============================================================================
+#  Quantora Notify — settings (the bot token and chat id are secrets: they go
+#  in Qauntora/.env as TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, not here)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+#  TRADING ALERTS
+# -----------------------------------------------------------------------------
+[alerts]
+tier2 = true              # heads-up when a setup starts FORMING (no trade yet)
+tier3 = true              # CONFIRMED signal with entry / stop / target
+cancelled = true          # a CONFIRMED signal stopped being confirmed
+outcomes = true           # Validate labelled a Tier 3 signal: WIN / LOSS / TIMEOUT + R
+# Signals older than this many bars of their mode are not announced as new —
+# e.g. after Core catches up from downtime. They're counted in a short note instead.
+max_signal_age_bars = 2
+# Outcomes resolved longer ago than this aren't announced (e.g. a big first labelling run).
+max_outcome_age_hours = 24
+
+# -----------------------------------------------------------------------------
+#  SYSTEM-HEALTH ALERTS (spec Section 12: a dead system that still *looks*
+#  alive in the database is the dangerous failure)
+# -----------------------------------------------------------------------------
+[health]
+# Feed: newest stored M15 bar older than this (24/7 symbols always; forex/gold
+# only while the FX week is open).
+feed_max_lag_minutes = 60
+# Core: a pair's state not refreshed within 2 bars of its mode + this grace.
+core_grace_minutes = 30
+# Validate: a Tier 3 signal still unlabelled this long after its time limit ran out.
+validate_grace_hours = 6
+# While a problem lasts, repeat the alert at most this often.
+repeat_every_hours = 3
+
+# -----------------------------------------------------------------------------
+[run]
+interval_seconds = 60     # `python main.py run` checks this often

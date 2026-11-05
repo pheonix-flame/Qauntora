@@ -755,11 +755,14 @@ quantora/
 │   ├── main.py
 │   └── requirements.txt
 │
-├── quantora_notify/
-│   ├── config.py
-│   ├── telegram_bot.py
-│   ├── health_alerts.py
-│   ├── main.py
+├── quantora_notify/             ← built (step 5): reads only; keeps its own small state file
+│   ├── config.py · settings.toml
+│   ├── channels/                # telegram.py (Bot API) · console.py · base.py
+│   ├── health.py                # Feed / Core / Validate / database health checks
+│   ├── messages.py              # alert texts
+│   ├── notifier.py · state.py   # at-least-once delivery, no floods, no repeats
+│   ├── storage/                 # oracle.py · local.py
+│   ├── main.py                  # chat-id · test · check · once · run
 │   └── requirements.txt
 │
 └── quantora_dashboard/

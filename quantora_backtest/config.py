@@ -23,7 +23,9 @@ MODES = ("SCALP", "SWING", "LONG")
 
 
 def _env(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
+    v = os.getenv(name, default).strip()
+    # an older .env template put comments after blank values; dotenv then reads the comment AS the value
+    return default if v.startswith(("# >>>", "# optional")) else v
 
 
 @dataclass(frozen=True)

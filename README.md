@@ -3,7 +3,7 @@
 A patient, multi-asset signal and execution system for Forex, Gold, Synthetic Indices and Crypto on Deriv MT5.
 The full design is in [`design_doc/Quantora_Specification.md`](design_doc/Quantora_Specification.md).
 
-**Status:** Build-order steps 1–4 (Feed + schema, backtesting harness, Core, Validate) are done, and tested together end-to-end against a real Oracle database. Nothing in this repo places trades yet: Core *suggests*, and execution (Sentinel) is step 7.
+**Status:** Build-order steps 1–5 (Feed + schema, backtesting harness, Core, Validate, Notify) are done, and tested together end-to-end against a real Oracle database. Nothing in this repo places trades yet: Core *suggests*, and execution (Sentinel) is step 7.
 
 | Engine | Status |
 |---|---|
@@ -13,7 +13,8 @@ The full design is in [`design_doc/Quantora_Specification.md`](design_doc/Quanto
 | `quantora_core/`: three-tier confluence engine (Watching / Forming / Confirmed) | done |
 | `quantora_validate/`: Triple Barrier outcome labelling (WIN / LOSS / TIMEOUT + R) | done |
 | `integration/`: end-to-end test of all engines together | done |
-| Notify, Sentinel, Calibrate, Dashboard | not started (see spec Section 17) |
+| `quantora_notify/`: Telegram trading alerts + system-health alerts | done |
+| Sentinel, Calibrate, Dashboard | not started (see spec Section 17) |
 
 ---
 
@@ -28,7 +29,7 @@ All of this is free except an optional VPS.
 | 3 | **MT5 desktop terminal** | The Python package drives it | Download from Deriv's MT5 page, then log in with your MT5 login, password and server. |
 | 4 | **Python 3.11 or 3.12, 64-bit** | Runtime | python.org. Tick "Add to PATH". |
 | 5 | **Oracle AI Database Free** (formerly 23ai Free) | Database | [oracle.com/database/free](https://www.oracle.com/database/free/get-started/) → Windows download → run `setup.exe` and choose a password for SYS/SYSTEM. It's free, runs on the same PC as MT5, and its storage cap is far more than M15 bars need (about 350k rows per year for all 10 symbols). No Oracle Client install is needed: Python connects with `python-oracledb` in thin mode. Optional GUI: SQL Developer, or its VS Code extension. |
-| 6 | **Telegram bot token** | Quantora Notify (step 5) | In Telegram, message **@BotFather** → `/newbot` → copy the token. To get your chat id, message your bot, then open `https://api.telegram.org/bot<TOKEN>/getUpdates`. |
+| 6 | **A Telegram bot** (free, 5 minutes) | Quantora Notify alerts on your phone | See **Create your Telegram bot** below. |
 
 ### "API keys": what you actually need
 
@@ -243,9 +244,81 @@ The steps: Feed backfills 400 days, Feed verifies the data, Core runs 120 days b
 - **A.** Core's live log equals Core's replay, so live and history make identical decisions.
 - **B.** Every Validate label belongs to a real Tier 3 / Tier 2 entry.
 - **C.** Validate's labels equal the backtester's outcomes. These are two separately written triple-barrier implementations.
-- **D.** Running Feed, Core and Validate again duplicates nothing.
+- **D.** Running Feed, Core, Validate and Notify again duplicates nothing.
+- **E.** Notify sends exactly the right alerts, to the right chat, over real HTTP to a stand-in Telegram server.
+- **F.** Notify sends a health alert when Feed goes quiet, then a recovery message.
 
 ⚠ Use `--store oracle` only on a test database, or before you've collected real data.
+
+## Create your Telegram bot
+
+You need two values in `Qauntora\.env`: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. It takes about 5 minutes and costs nothing.
+
+**1. Create the bot with BotFather.** BotFather is Telegram's official bot for making bots.
+1. Install Telegram on your phone or PC and sign in.
+2. Search for **`@BotFather`**. Open the one with the **blue verified tick** (there are fakes) and press **Start**.
+3. Send **`/newbot`**.
+4. BotFather asks for a **name**: anything, e.g. `Quantora Alerts`.
+5. Then a **username**: it must be unique and end in `bot`, e.g. `quantora_austin_bot`. If it's taken, try another.
+6. BotFather replies with a **token** like `7234567890:AAHk3x...`. Copy it into `Qauntora\.env`:
+   ```
+   TELEGRAM_BOT_TOKEN=7234567890:AAHk3x...
+   ```
+   Treat it like a password: anyone with it can send messages as your bot. If it ever leaks, send BotFather `/revoke` and paste the new one in.
+
+**2. Say hello to your bot.** A bot can't message you until you message it first.
+1. In Telegram, search for your bot's username, open it, and press **Start**.
+2. Send it any message, e.g. `hi`.
+
+**3. Find your chat id.** Notify does this for you:
+```powershell
+cd Qauntora\quantora_notify
+pip install -r requirements.txt          # same .venv
+python main.py chat-id
+```
+It prints a line like `TELEGRAM_CHAT_ID=123456789 (private: Austin)`. Copy that line into `Qauntora\.env`.
+
+**4. Test it:**
+```powershell
+python main.py test       # a test message should arrive on your phone
+python main.py check      # token, chat, database, what's being watched
+```
+
+**Optional:**
+- Run `/setdescription` and `/setuserpic` in BotFather to give the bot a description and picture.
+- To get alerts in a group: add the bot to the group, send a message there, and re-run `chat-id`. Group ids are negative numbers.
+- If you'd rather try Notify before making the bot, add `--channel console` to print alerts in the terminal instead.
+
+## Alerts: `quantora_notify/`
+
+Build step 5 (spec Section 10), with two classes of alert:
+
+| Trading | When |
+|---|---|
+| 🟡 Setup forming | A setup reached Tier 2. Says exactly what it's still waiting for. *No trade yet.* |
+| 🟢 Confirmed | Tier 3, with entry, stop, target and reward:risk |
+| ⚪ No longer confirmed | A confirmed signal dropped back |
+| ✅ ❌ ⏱ Result | Validate labelled a Tier 3 signal: WIN / LOSS / TIMEOUT, with its R |
+
+| Health ⚠️ | When |
+|---|---|
+| Feed stopped | No new price bar for 60 min (24/7 symbols; forex only while the FX week is open) |
+| Core stopped | A pair not evaluated for 2 bars + 30 min |
+| Validate stopped | Tier 3 signals past their time limit + 6 h with no outcome |
+| Database down | Oracle unreachable |
+
+A health alert repeats at most every 3 hours while the problem lasts, and you get a ✅ *Recovered* message when it clears.
+
+```powershell
+python main.py once       # one pass
+python main.py run        # keep going (every 60 s) — run it alongside Feed, Core and Validate
+```
+
+- **It never floods you.** The first run just says hello and starts from "now". Tier changes that happened while Core was catching up aren't announced as new; you get one short note instead. At most 30 messages per pass.
+- **It never loses one.** It only moves past a signal after Telegram accepted the message. If your internet drops, the alert is retried on the next pass.
+- **It writes nothing to the database.** It keeps its place in `quantora_notify\notify_state\`.
+- **Your bot token never appears** in logs or error messages.
+- **To change which alerts you get,** edit `quantora_notify\settings.toml`.
 
 ## How Feed is organised
 

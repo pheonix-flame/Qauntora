@@ -26,3 +26,4 @@ backtest_output/
 # Core outputs (local state, replay files)
 core_output/
 validate_output/
+notify_state/
