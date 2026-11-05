@@ -302,6 +302,8 @@ Eight tables, all prefixed `qtx_`. Which engine owns which table matters — it'
 
 Audit note across the whole schema: every table carries at least one timestamp column that is **never backfilled or edited by any engine** — set once, on insert, by the database itself in **UTC** (`SYS_EXTRACT_UTC(SYSTIMESTAMP)` on Oracle / `SYSUTCDATETIME()` on SQL Server), not by application code. Note that plain `SYSTIMESTAMP` would record the database server's *local* time, which is why the Oracle defaults wrap it.
 
+**Column naming note:** the trading-mode column is `trade_mode`, not `mode`: `MODE` is a reserved word in Oracle 23ai+, both as a column name and as a bind variable (found by testing against a real Oracle Free instance).
+
 **Current target: Oracle** (Oracle AI Database Free locally, or an Always Free Autonomous Database), accessed with `python-oracledb` in thin mode. SQL Server DDL is kept below as the documented fallback; switching back is one new module in each engine's storage layer, because all SQL is isolated there.
 
 ### Oracle (current)
@@ -345,7 +347,7 @@ CREATE INDEX ix_news_ts ON qtx_news_events (event_ts, impact);
 CREATE TABLE qtx_config_versions (
     version_id              NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     symbol                  VARCHAR2(20)  NOT NULL,
-    mode                    VARCHAR2(10)  NOT NULL,
+    trade_mode                    VARCHAR2(10)  NOT NULL,   -- SCALP | SWING | LONG ("mode" is reserved in Oracle 23ai+)
     weights_json            CLOB          NOT NULL,
     tier2_threshold         NUMBER(4,2)   NOT NULL,
     tier3_threshold         NUMBER(4,2)   NOT NULL,
@@ -357,25 +359,25 @@ CREATE TABLE qtx_config_versions (
     CONSTRAINT ck_weights_json CHECK (weights_json IS JSON),
     CONSTRAINT ck_metrics_json CHECK (backtest_metrics_json IS JSON)
 );
-CREATE INDEX ix_config_active ON qtx_config_versions (symbol, mode, approved_flag);
+CREATE INDEX ix_config_active ON qtx_config_versions (symbol, trade_mode, approved_flag);
 
 CREATE TABLE qtx_signal_state (
     symbol                   VARCHAR2(20)    NOT NULL,
-    mode                     VARCHAR2(10)    NOT NULL,
+    trade_mode                     VARCHAR2(10)    NOT NULL,   -- SCALP | SWING | LONG ("mode" is reserved in Oracle 23ai+)
     current_tier             VARCHAR2(15)    NOT NULL,
     direction                VARCHAR2(4),
     score                    NUMBER(4,2),
     indicator_snapshot_json  CLOB,
     notes                    VARCHAR2(400),
     updated_at               TIMESTAMP       DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP),
-    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, mode),
+    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, trade_mode),
     CONSTRAINT ck_snapshot_json CHECK (indicator_snapshot_json IS JSON)
 );
 
 CREATE TABLE qtx_signals (
     signal_id                NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     symbol                   VARCHAR2(20)    NOT NULL,
-    mode                     VARCHAR2(10)    NOT NULL,
+    trade_mode                     VARCHAR2(10)    NOT NULL,   -- SCALP | SWING | LONG ("mode" is reserved in Oracle 23ai+)
     tier                     VARCHAR2(15)    NOT NULL,
     direction                VARCHAR2(4),
     score                    NUMBER(4,2),
@@ -473,7 +475,7 @@ CREATE INDEX ix_news_ts ON qtx_news_events (event_ts, impact);
 CREATE TABLE qtx_config_versions (
     version_id             INT           IDENTITY(1,1) PRIMARY KEY,
     symbol                 VARCHAR(20)   NOT NULL,
-    mode                   VARCHAR(10)   NOT NULL,   -- SCALP | SWING | LONG
+    trade_mode                   VARCHAR(10)   NOT NULL,   -- SCALP | SWING | LONG
     weights_json           NVARCHAR(MAX) NOT NULL,
     tier2_threshold        DECIMAL(4,2)  NOT NULL,
     tier3_threshold        DECIMAL(4,2)  NOT NULL,
@@ -485,25 +487,25 @@ CREATE TABLE qtx_config_versions (
     CONSTRAINT ck_weights_json CHECK (ISJSON(weights_json) = 1),
     CONSTRAINT ck_metrics_json CHECK (backtest_metrics_json IS NULL OR ISJSON(backtest_metrics_json) = 1)
 );
-CREATE INDEX ix_config_active ON qtx_config_versions (symbol, mode, approved_flag);
+CREATE INDEX ix_config_active ON qtx_config_versions (symbol, trade_mode, approved_flag);
 
 CREATE TABLE qtx_signal_state (
     symbol                   VARCHAR(20)   NOT NULL,
-    mode                     VARCHAR(10)   NOT NULL,
+    trade_mode                     VARCHAR(10)   NOT NULL,
     current_tier             VARCHAR(15)   NOT NULL,   -- WATCHING | FORMING | CONFIRMED
     direction                VARCHAR(4),
     score                    DECIMAL(4,2),
     indicator_snapshot_json  NVARCHAR(MAX),
     notes                    VARCHAR(400),
     updated_at               DATETIME2     DEFAULT SYSUTCDATETIME(),
-    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, mode),
+    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, trade_mode),
     CONSTRAINT ck_snapshot_json CHECK (indicator_snapshot_json IS NULL OR ISJSON(indicator_snapshot_json) = 1)
 );
 
 CREATE TABLE qtx_signals (
     signal_id                INT           IDENTITY(1,1) PRIMARY KEY,
     symbol                   VARCHAR(20)   NOT NULL,
-    mode                     VARCHAR(10)   NOT NULL,
+    trade_mode                     VARCHAR(10)   NOT NULL,
     tier                     VARCHAR(15)   NOT NULL,
     direction                VARCHAR(4),
     score                    DECIMAL(4,2),
@@ -720,12 +722,17 @@ quantora/
 │   └── requirements.txt
 │   (live_price_poll.py for Scalp Tier 2 — deferred to Sentinel's MT5 gateway, Section 10)
 │
-├── quantora_validate/
-│   ├── config.py
-│   ├── db.py
-│   ├── triple_barrier.py        # WIN/LOSS/TIMEOUT labeling, Section 6
+├── quantora_validate/           ← built (step 4): reads qtx_ohlcv + qtx_signals, writes qtx_signal_outcomes only
+│   ├── config.py · settings.toml
+│   ├── triple_barrier.py        # WIN/LOSS/TIMEOUT labeling, Section 6 (same rules as the backtester)
+│   ├── validate.py              # labels Tier 3 signals + hypothetical Tier 2 entries (Section 4 check)
+│   ├── storage/                 # oracle.py · local.py
 │   ├── main.py
 │   └── requirements.txt
+│
+├── integration/                 # end-to-end test: every engine's real CLI, files or real Oracle
+│   ├── run_pipeline.py
+│   └── fake_mt5_feed.py         # simulated MT5 terminal (MT5 itself is Windows-only)
 │
 ├── quantora_sentinel/
 │   ├── config.py

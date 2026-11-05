@@ -101,6 +101,7 @@ class CoreConfig:
     blackout_after_minutes: int = 15
     seconds_after_bar_close: int = 60
     max_feed_lag_minutes: int = 45
+    max_catch_up_bars: int = 50
     output_dir: Path = BASE_DIR / "core_output"
     settings_file: Path = BASE_DIR / "settings.toml"
 
@@ -139,6 +140,7 @@ def parse_settings(raw: dict, settings_file: Path) -> dict:
         blackout_after_minutes=int(news.get("blackout_after_minutes", 15)),
         seconds_after_bar_close=int(run.get("seconds_after_bar_close", 60)),
         max_feed_lag_minutes=int(run.get("max_feed_lag_minutes", 45)),
+        max_catch_up_bars=int(run.get("max_catch_up_bars", 50)),
         settings_file=settings_file,
     )
 
@@ -152,4 +154,5 @@ def load_config(settings_file: Path | None = None) -> CoreConfig:
                     dsn=_env("ORACLE_DSN", "localhost:1521/FREEPDB1"),
                     wallet_dir=_env("ORACLE_WALLET_DIR"), wallet_password=_env("ORACLE_WALLET_PASSWORD")),
         **parse_settings(raw, path),
+        output_dir=Path(_env("CORE_OUTPUT_DIR")) if _env("CORE_OUTPUT_DIR") else BASE_DIR / "core_output",
     )

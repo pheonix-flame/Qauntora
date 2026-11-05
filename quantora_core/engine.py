@@ -22,7 +22,6 @@ from timeframes import rollup
 log = logging.getLogger("quantora.core")
 
 ALWAYS_OPEN = {"SYNTHETIC", "CRYPTO"}
-MAX_CATCH_UP_BARS = 50
 
 
 @dataclass
@@ -102,12 +101,12 @@ def evaluate_pair(store: CoreStore, cfg: CoreConfig, symbol: str, mode_name: str
 
     # Bars since the last evaluation (catch-up if Core was offline), oldest first.
     new = evals[evals["close_ts"] > prev_close] if prev_close is not None else evals.tail(1)
-    if len(new) > MAX_CATCH_UP_BARS:
+    if len(new) > cfg.max_catch_up_bars:
         log.warning("%s %s: %d bars since last run — logging only the latest", symbol, mode_name, len(new))
         new = new.tail(1)
     start_key = state_key(prev["tier"], prev["direction"]) if prev else ("WATCHING", None)
     for _, t in transitions(new, start_key).iterrows():
-        snap = snapshot(t, sigcfg, active) | {"prev_tier": t["prev_tier"]}
+        snap = snapshot(t, sigcfg, active) | {"prev_tier": t["prev_tier"], "prev_direction": t["prev_direction"]}
         sug = suggestion(t, mode) if t["tier"] == "CONFIRMED" else {"entry": None, "stop": None, "target": None}
         sid = store.append_signal(symbol, mode_name, t["tier"], SIDE.get(int(t["direction"])), float(t["score"]),
                                   sug["entry"], sug["stop"], sug["target"], snap)

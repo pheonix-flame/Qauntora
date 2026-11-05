@@ -10,27 +10,32 @@ from config import DBConfig, SignalConfig, validate_signal_config
 from storage.base import BAR_COLUMNS, CoreStore, tidy_bars
 
 
-def _text(v):
-    """CLOB columns come back as LOB objects in oracledb."""
-    return v.read() if hasattr(v, "read") else v
+def _json(v) -> dict:
+    """JSON column value -> dict. Oracle 23ai+ may hand back an IS JSON CLOB already parsed."""
+    if v is None:
+        return {}
+    if isinstance(v, (dict, list)):
+        return v
+    v = v.read() if hasattr(v, "read") else v
+    return json.loads(v) if v else {}
 
 
 class OracleCoreStore(CoreStore):
     _UPSERT_STATE = """
         MERGE INTO qtx_signal_state t
-        USING (SELECT :symbol AS symbol, :mode AS mode FROM dual) s
-        ON (t.symbol = s.symbol AND t.mode = s.mode)
+        USING (SELECT :symbol AS symbol, :trade_mode AS trade_mode FROM dual) s
+        ON (t.symbol = s.symbol AND t.trade_mode = s.trade_mode)
         WHEN MATCHED THEN UPDATE SET
             current_tier = :tier, direction = :direction, score = :score,
             indicator_snapshot_json = :snap, notes = :notes,
             updated_at = SYS_EXTRACT_UTC(SYSTIMESTAMP)
         WHEN NOT MATCHED THEN INSERT
-            (symbol, mode, current_tier, direction, score, indicator_snapshot_json, notes)
-        VALUES (:symbol, :mode, :tier, :direction, :score, :snap, :notes)"""
+            (symbol, trade_mode, current_tier, direction, score, indicator_snapshot_json, notes)
+        VALUES (:symbol, :trade_mode, :tier, :direction, :score, :snap, :notes)"""
     _INSERT_SIGNAL = """
-        INSERT INTO qtx_signals (symbol, mode, tier, direction, score, entry_price, stop_loss,
+        INSERT INTO qtx_signals (symbol, trade_mode, tier, direction, score, entry_price, stop_loss,
                                  take_profit, lot_size, indicator_snapshot_json)
-        VALUES (:symbol, :mode, :tier, :direction, :score, :entry, :stop, :target, NULL, :snap)
+        VALUES (:symbol, :trade_mode, :tier, :direction, :score, :entry, :stop, :target, NULL, :snap)
         RETURNING signal_id INTO :new_id"""
 
     def __init__(self, cfg: DBConfig, driver=None) -> None:
@@ -77,32 +82,31 @@ class OracleCoreStore(CoreStore):
         cur = self.conn.cursor()
         cur.execute("""SELECT version_id, weights_json, tier2_threshold, tier3_threshold
                        FROM qtx_config_versions
-                       WHERE symbol = :1 AND mode = :2 AND approved_flag = 'Y'
+                       WHERE symbol = :1 AND trade_mode = :2 AND approved_flag = 'Y'
                        ORDER BY approved_at DESC NULLS LAST, version_id DESC
                        FETCH FIRST 1 ROWS ONLY""", [symbol, mode])
         row = cur.fetchone()
         if row is None:
             return None
         vid, wjson, t2, t3 = row
-        body = json.loads(_text(wjson))
+        body = _json(wjson)
         return validate_signal_config(float(t2), float(t3), body.get("weights", {}), body.get("params", {}),
                                       version_id=int(vid), base=base)
 
     def get_state(self, symbol: str, mode: str) -> dict | None:
         cur = self.conn.cursor()
         cur.execute("SELECT current_tier, direction, score, indicator_snapshot_json, notes "
-                    "FROM qtx_signal_state WHERE symbol = :1 AND mode = :2", [symbol, mode])
+                    "FROM qtx_signal_state WHERE symbol = :1 AND trade_mode = :2", [symbol, mode])
         row = cur.fetchone()
         if row is None:
             return None
-        snap = _text(row[3])
         return {"tier": row[0], "direction": row[1], "score": row[2],
-                "snapshot": json.loads(snap) if snap else {}, "notes": row[4]}
+                "snapshot": _json(row[3]), "notes": row[4]}
 
     def list_states(self) -> pd.DataFrame:
         cur = self.conn.cursor()
-        cur.execute("SELECT symbol, mode, current_tier, direction, score, notes, updated_at "
-                    "FROM qtx_signal_state ORDER BY symbol, mode")
+        cur.execute("SELECT symbol, trade_mode, current_tier, direction, score, notes, updated_at "
+                    "FROM qtx_signal_state ORDER BY symbol, trade_mode")
         return pd.DataFrame(cur.fetchall(), columns=["symbol", "mode", "tier", "direction", "score", "notes",
                                                      "updated_at"])
 
@@ -110,14 +114,14 @@ class OracleCoreStore(CoreStore):
     def save_state(self, symbol, mode, tier, direction, score, snapshot, notes) -> None:
         cur = self.conn.cursor()
         cur.setinputsizes(snap=self._db.DB_TYPE_CLOB)
-        cur.execute(self._UPSERT_STATE, symbol=symbol, mode=mode, tier=tier, direction=direction,
+        cur.execute(self._UPSERT_STATE, symbol=symbol, trade_mode=mode, tier=tier, direction=direction,
                     score=round(float(score), 2), snap=json.dumps(snapshot), notes=(notes or "")[:400])
 
     def append_signal(self, symbol, mode, tier, direction, score, entry, stop, target, snapshot) -> int:
         cur = self.conn.cursor()
         new_id = cur.var(self._db.NUMBER)
         cur.setinputsizes(snap=self._db.DB_TYPE_CLOB)
-        cur.execute(self._INSERT_SIGNAL, symbol=symbol, mode=mode, tier=tier, direction=direction,
+        cur.execute(self._INSERT_SIGNAL, symbol=symbol, trade_mode=mode, tier=tier, direction=direction,
                     score=round(float(score), 2), entry=entry, stop=stop, target=target,
                     snap=json.dumps(snapshot), new_id=new_id)
         value = new_id.getvalue()

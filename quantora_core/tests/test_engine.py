@@ -179,3 +179,15 @@ def test_cli_once_status_replay(setup, tmp_path, capsys, monkeypatch):
     assert "V75 SWING" in text and "core_signals" in text
     df = pd.read_csv(out)
     assert {"signal_ts", "tier", "direction", "is_entry", "entry", "stop", "target"} <= set(df.columns)
+
+
+def test_once_fails_loudly_when_a_pair_errors(setup, monkeypatch, capsys):
+    """A crash must not look like success (it hid a real Oracle bug once)."""
+    cfg, csv, _ = setup
+    monkeypatch.setattr(main, "load_config", lambda *_: cfg)
+
+    def boom(*a, **k):
+        raise RuntimeError("ORA-01745: invalid host/bind variable name")
+    monkeypatch.setattr(main, "evaluate_pair", boom)
+    assert main.main(["once", "--csv-dir", str(csv)]) == 1
+    assert "FAILED: V75 SWING" in capsys.readouterr().out

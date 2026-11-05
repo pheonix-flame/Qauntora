@@ -127,4 +127,5 @@ def load_config(settings_file: Path | None = None) -> BacktestConfig:
                     dsn=_env("ORACLE_DSN", "localhost:1521/FREEPDB1"),
                     wallet_dir=_env("ORACLE_WALLET_DIR"), wallet_password=_env("ORACLE_WALLET_PASSWORD")),
         **parse_settings(raw, path),
+        output_dir=Path(_env("BACKTEST_OUTPUT_DIR")) if _env("BACKTEST_OUTPUT_DIR") else BASE_DIR / "backtest_output",
     )

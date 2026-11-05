@@ -31,7 +31,7 @@ CREATE INDEX ix_news_ts ON qtx_news_events (event_ts, impact);
 CREATE TABLE qtx_config_versions (
     version_id             INT           IDENTITY(1,1) PRIMARY KEY,
     symbol                 VARCHAR(20)   NOT NULL,
-    mode                   VARCHAR(10)   NOT NULL,   -- SCALP | SWING | LONG
+    trade_mode                   VARCHAR(10)   NOT NULL,   -- SCALP | SWING | LONG
     weights_json           NVARCHAR(MAX) NOT NULL,
     tier2_threshold        DECIMAL(4,2)  NOT NULL,
     tier3_threshold        DECIMAL(4,2)  NOT NULL,
@@ -43,25 +43,25 @@ CREATE TABLE qtx_config_versions (
     CONSTRAINT ck_weights_json CHECK (ISJSON(weights_json) = 1),
     CONSTRAINT ck_metrics_json CHECK (backtest_metrics_json IS NULL OR ISJSON(backtest_metrics_json) = 1)
 );
-CREATE INDEX ix_config_active ON qtx_config_versions (symbol, mode, approved_flag);
+CREATE INDEX ix_config_active ON qtx_config_versions (symbol, trade_mode, approved_flag);
 
 CREATE TABLE qtx_signal_state (
     symbol                   VARCHAR(20)   NOT NULL,
-    mode                     VARCHAR(10)   NOT NULL,
+    trade_mode                     VARCHAR(10)   NOT NULL,
     current_tier             VARCHAR(15)   NOT NULL,   -- WATCHING | FORMING | CONFIRMED
     direction                VARCHAR(4),
     score                    DECIMAL(4,2),
     indicator_snapshot_json  NVARCHAR(MAX),
     notes                    VARCHAR(400),
     updated_at               DATETIME2     DEFAULT SYSUTCDATETIME(),
-    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, mode),
+    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, trade_mode),
     CONSTRAINT ck_snapshot_json CHECK (indicator_snapshot_json IS NULL OR ISJSON(indicator_snapshot_json) = 1)
 );
 
 CREATE TABLE qtx_signals (
     signal_id                INT           IDENTITY(1,1) PRIMARY KEY,
     symbol                   VARCHAR(20)   NOT NULL,
-    mode                     VARCHAR(10)   NOT NULL,
+    trade_mode                     VARCHAR(10)   NOT NULL,
     tier                     VARCHAR(15)   NOT NULL,
     direction                VARCHAR(4),
     score                    DECIMAL(4,2),

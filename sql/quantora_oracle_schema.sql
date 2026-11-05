@@ -36,7 +36,7 @@ CREATE INDEX ix_news_ts ON qtx_news_events (event_ts, impact);
 CREATE TABLE qtx_config_versions (
     version_id              NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     symbol                  VARCHAR2(20)  NOT NULL,
-    mode                    VARCHAR2(10)  NOT NULL,
+    trade_mode                    VARCHAR2(10)  NOT NULL,   -- SCALP | SWING | LONG ("mode" is reserved in Oracle 23ai+)
     weights_json            CLOB          NOT NULL,
     tier2_threshold         NUMBER(4,2)   NOT NULL,
     tier3_threshold         NUMBER(4,2)   NOT NULL,
@@ -48,25 +48,25 @@ CREATE TABLE qtx_config_versions (
     CONSTRAINT ck_weights_json CHECK (weights_json IS JSON),
     CONSTRAINT ck_metrics_json CHECK (backtest_metrics_json IS JSON)
 );
-CREATE INDEX ix_config_active ON qtx_config_versions (symbol, mode, approved_flag);
+CREATE INDEX ix_config_active ON qtx_config_versions (symbol, trade_mode, approved_flag);
 
 CREATE TABLE qtx_signal_state (
     symbol                   VARCHAR2(20)    NOT NULL,
-    mode                     VARCHAR2(10)    NOT NULL,
+    trade_mode                     VARCHAR2(10)    NOT NULL,   -- SCALP | SWING | LONG ("mode" is reserved in Oracle 23ai+)
     current_tier             VARCHAR2(15)    NOT NULL,
     direction                VARCHAR2(4),
     score                    NUMBER(4,2),
     indicator_snapshot_json  CLOB,
     notes                    VARCHAR2(400),
     updated_at               TIMESTAMP       DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP),
-    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, mode),
+    CONSTRAINT pk_qtx_signal_state PRIMARY KEY (symbol, trade_mode),
     CONSTRAINT ck_snapshot_json CHECK (indicator_snapshot_json IS JSON)
 );
 
 CREATE TABLE qtx_signals (
     signal_id                NUMBER          GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     symbol                   VARCHAR2(20)    NOT NULL,
-    mode                     VARCHAR2(10)    NOT NULL,
+    trade_mode                     VARCHAR2(10)    NOT NULL,   -- SCALP | SWING | LONG ("mode" is reserved in Oracle 23ai+)
     tier                     VARCHAR2(15)    NOT NULL,
     direction                VARCHAR2(4),
     score                    NUMBER(4,2),

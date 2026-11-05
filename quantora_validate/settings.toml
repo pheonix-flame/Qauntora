@@ -1,0 +1,31 @@
+# =============================================================================
+#  Quantora Validate — settings (no secrets here; passwords live in Qauntora/.env)
+# =============================================================================
+
+# Vertical barrier per mode (spec Section 6): if neither TP nor SL is hit
+# within this window the signal is labelled TIMEOUT.
+# sl_atr / tp_atr are only used for Tier 2 (FORMING) entries, which have no
+# stored stop/target — keep them equal to quantora_core/settings.toml.
+# Tier 3 (CONFIRMED) signals use the exact stop/target Core stored.
+[modes.SCALP]
+max_hold_minutes = 45
+sl_atr = 1.0
+tp_atr = 1.5
+
+[modes.SWING]
+max_hold_minutes = 20160          # 2 weeks
+sl_atr = 1.5
+tp_atr = 3.0
+
+[modes.LONG]
+max_hold_minutes = 129600         # 90 days
+sl_atr = 2.0
+tp_atr = 4.0
+
+[label]
+# Also label Tier 2 entries ("what if we'd acted at FORMING?") so the
+# Section 4 check — does waiting for Tier 3 pay? — can run on live history.
+tier2_hypothetical = true
+
+[run]
+interval_minutes = 60             # `python main.py run` checks open signals this often

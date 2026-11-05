@@ -152,4 +152,7 @@ def load_config() -> FeedConfig:
         symbols=_load_symbols(),
         backfill_days=_env_int("BACKFILL_DAYS", 365),
         bar_close_delay_s=_env_int("BAR_CLOSE_DELAY_S", 20),
+        # optional overrides (used by integration tests to keep output out of the repo)
+        preview_dir=Path(_env("FEED_PREVIEW_DIR")) if _env("FEED_PREVIEW_DIR") else BASE_DIR / "preview_output",
+        log_dir=Path(_env("FEED_LOG_DIR")) if _env("FEED_LOG_DIR") else BASE_DIR / "logs",
     )

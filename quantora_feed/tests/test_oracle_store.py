@@ -28,13 +28,17 @@ class FakeCursor:
     def execute(self, sql, params=None):
         self.db.executed.append(sql)
         if "user_tables" in sql:
-            self._result = [(1 if "qtx_ohlcv" in self.db.tables else 0,)]
+            self._result = [(t.upper(),) for t in self.db.tables]
+        elif "user_indexes" in sql:
+            self._result = [(i.upper(),) for i in self.db.indexes]
         elif sql.startswith("SELECT MAX(bar_ts)"):
             symbol, tf = params
             ts = [k[2] for k in self.db.ohlcv if k[0] == symbol and k[1] == tf]
             self._result = [(max(ts) if ts else None,)]
         elif sql.startswith("CREATE TABLE"):
             self.db.tables.add(sql.split()[2].lower())
+        elif sql.startswith("CREATE INDEX"):
+            self.db.indexes.add(sql.split()[2].lower())
 
     def executemany(self, sql, rows):
         self.db.batches.append(len(rows))
@@ -60,6 +64,9 @@ class FakeCursor:
     def fetchone(self):
         return self._result[0]
 
+    def fetchall(self):
+        return self._result
+
 
 class FakeConn:
     version = "23.26.0.0.0"
@@ -67,7 +74,7 @@ class FakeConn:
     def __init__(self):
         self.ohlcv, self.pending = {}, {}
         self.news, self.pending_news = set(), set()
-        self.tables, self.executed, self.batches = set(), [], []
+        self.tables, self.indexes, self.executed, self.batches = set(), set(), [], []
         self.commits = self.rollbacks = 0
         self.fail_next = False
 
@@ -168,6 +175,18 @@ def test_init_schema_runs_each_statement_once(fake_driver):
     assert all(";" not in s for s in ddl)
     assert store.schema_exists() is True
     assert store.init_schema(cfg.schema_file) is False  # second run is a no-op
+
+
+def test_init_schema_heals_a_half_built_schema(fake_driver):
+    store = OracleStore(DB, driver=fake_driver)
+    cfg = config.load_config()
+    fake_driver.conn.tables |= {"qtx_ohlcv", "qtx_news_events"}  # an earlier run died part-way
+    fake_driver.conn.indexes |= {"ix_ohlcv_ts"}
+    assert store.schema_exists() is False
+    assert store.init_schema(cfg.schema_file) is True
+    created = [s.split()[2] for s in fake_driver.conn.executed if s.startswith("CREATE")]
+    assert "qtx_ohlcv" not in created and "ix_ohlcv_ts" not in created and "qtx_signals" in created
+    assert store.schema_exists() is True
 
 
 def test_real_schema_file_splits_into_expected_statements():

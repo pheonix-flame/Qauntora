@@ -24,6 +24,9 @@ from storage.base import Store
 log = logging.getLogger("quantora.feed")
 
 BATCH_SIZE = 5_000
+QTX_TABLES = {"QTX_OHLCV", "QTX_NEWS_EVENTS", "QTX_CONFIG_VERSIONS", "QTX_SIGNAL_STATE", "QTX_SIGNALS",
+              "QTX_SIGNAL_OUTCOMES", "QTX_TRADES", "QTX_ACCOUNT_SNAPSHOTS"}
+_DDL_OBJECT = re.compile(r"^CREATE\s+(TABLE|INDEX)\s+(\w+)", re.IGNORECASE)
 
 
 def split_sql_script(sql: str) -> list[str]:
@@ -103,21 +106,36 @@ class OracleStore(Store):
     def describe(self) -> str:
         return f"Oracle Database {self.conn.version} at {self._dsn}"
 
-    def schema_exists(self) -> bool:
+    def _existing(self) -> tuple[set[str], set[str]]:
         cur = self.conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM user_tables WHERE table_name = 'QTX_OHLCV'")
-        return cur.fetchone()[0] > 0
+        cur.execute("SELECT table_name FROM user_tables")
+        tables = {r[0].upper() for r in cur.fetchall()}
+        cur.execute("SELECT index_name FROM user_indexes")
+        return tables, {r[0].upper() for r in cur.fetchall()}
+
+    def schema_exists(self) -> bool:
+        """True only if ALL qtx_ tables exist (a half-built schema is not 'present')."""
+        tables, _ = self._existing()
+        return QTX_TABLES <= tables
 
     def init_schema(self, schema_file: Path) -> bool:
-        if self.schema_exists():
-            return False
+        """Create every qtx_ table/index that's missing. Safe to re-run; heals a half-built schema.
+
+        Returns True if anything was created.
+        """
+        tables, indexes = self._existing()
         cur = self.conn.cursor()
-        statements = split_sql_script(schema_file.read_text(encoding="utf-8"))
-        for stmt in statements:  # DDL auto-commits in Oracle
+        created = 0
+        for stmt in split_sql_script(schema_file.read_text(encoding="utf-8")):  # DDL auto-commits in Oracle
+            m = _DDL_OBJECT.match(stmt)
+            if m and m.group(2).upper() in (tables if m.group(1).upper() == "TABLE" else indexes):
+                continue
             log.debug("DDL: %s", stmt[:80])
             cur.execute(stmt)
-        log.info("Ran %d DDL statements", len(statements))
-        return True
+            created += 1
+        if created:
+            log.info("Ran %d DDL statements", created)
+        return created > 0
 
     # -- data -----------------------------------------------------------------
     def latest_bar_ts(self, symbol: str, timeframe: str) -> datetime | None:

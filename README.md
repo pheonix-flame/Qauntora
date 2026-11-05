@@ -3,7 +3,7 @@
 A patient, multi-asset signal and execution system for Forex, Gold, Synthetic Indices and Crypto on Deriv MT5.
 The full design is in [`design_doc/Quantora_Specification.md`](design_doc/Quantora_Specification.md).
 
-**Status:** Build-order steps 1–3 (Feed + schema, backtesting harness, Core) are done. Nothing in this repo places trades yet: Core *suggests*, and execution (Sentinel) is step 7.
+**Status:** Build-order steps 1–4 (Feed + schema, backtesting harness, Core, Validate) are done, and tested together end-to-end against a real Oracle database. Nothing in this repo places trades yet: Core *suggests*, and execution (Sentinel) is step 7.
 
 | Engine | Status |
 |---|---|
@@ -11,7 +11,9 @@ The full design is in [`design_doc/Quantora_Specification.md`](design_doc/Quanto
 | `quantora_feed/`: price history and economic calendar | done |
 | `quantora_backtest/`: purged walk-forward harness, baselines, promotion gate | done |
 | `quantora_core/`: three-tier confluence engine (Watching / Forming / Confirmed) | done |
-| Validate, Notify, Sentinel, Calibrate, Dashboard | not started (see spec Section 17) |
+| `quantora_validate/`: Triple Barrier outcome labelling (WIN / LOSS / TIMEOUT + R) | done |
+| `integration/`: end-to-end test of all engines together | done |
+| Notify, Sentinel, Calibrate, Dashboard | not started (see spec Section 17) |
 
 ---
 
@@ -73,6 +75,8 @@ CREATE USER quantora IDENTIFIED BY "choose-a-password"
 GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, CREATE VIEW TO quantora;
 EXIT
 ```
+
+These exact steps were tested against Oracle AI Database Free 23.26. If `init-db` is ever interrupted, run it again: it creates whatever is missing and skips what already exists.
 
 Put that password in `Qauntora/.env` as `ORACLE_PASSWORD` (`ORACLE_DSN` defaults to `localhost:1521/FREEPDB1`). Then:
 
@@ -207,6 +211,41 @@ python main.py run --symbol V75 --mode SWING --strategy core_signals --signals .
 That applies the same costs, walk-forward, random baseline and gate as everything else. It also fills the gate's **"Tier 3 beats Tier 2"** rule (Section 4): hypothetical entries at Tier 2 versus actual Tier 3 entries. If waiting doesn't pay for a symbol, the gate says so.
 
 **Not in this step:** Scalp mode's live-price polling between M15 closes (Section 2). It needs live prices from MT5, and spec Section 10 makes Sentinel the only MT5 connection, so it comes with Sentinel. Scalp still works on closed M15 bars.
+
+## Outcomes: `quantora_validate/`
+
+Build step 4 (spec Section 6). It answers "was the signal right?" for every signal Core logged. It reads `qtx_ohlcv` and `qtx_signals` and writes only `qtx_signal_outcomes`. It's insert-only: a label, once written, never changes.
+
+```powershell
+cd Qauntora\quantora_validate
+pip install -r requirements.txt          # same .venv
+python main.py check                     # how many signals wait for a label
+python main.py once                      # label everything whose outcome is now known
+python main.py report                    # live results per symbol/mode/tier, incl. Tier 3 vs Tier 2
+python main.py run                       # keep labelling every hour
+```
+
+- **Triple barrier.** Take-profit and stop-loss are the ones Core stored with the signal. The time limit is per mode: 45 min for SCALP, 2 weeks for SWING, 3 months for LONG. It walks the stored M15 path from the signal bar's close and applies the same pessimistic rules as the backtester (if SL and TP fall in the same bar, it counts a LOSS; a gap past the stop fills at the worse price). The result is WIN, LOSS or TIMEOUT plus the R-multiple. Trading costs are not applied: this labels whether the *signal* was right.
+- **Tier 2 too.** Every FORMING entry is also labelled as a hypothetical "what if we'd acted early" trade, so `report` can run spec Section 4's *Tier 3 vs Tier 2* check on live history. It says "not meaningful yet" until each side has 30+ outcomes.
+- **Never guesses.** A trade that hasn't finished stays *pending*. If a 24/7 symbol has a hole in its stored prices along the path, it also stays pending: a barrier might have been hit inside the missing bars. Re-run Feed's backfill to fill the hole.
+
+## Testing everything together: `integration/run_pipeline.py`
+
+This runs every engine through its **real command line**, in order, exactly as you would. Feed is fed by a simulated MT5 terminal, since MT5 itself only runs on Windows with a broker login.
+
+```powershell
+cd Qauntora
+python integration\run_pipeline.py --store files     # no database needed
+python integration\run_pipeline.py --store oracle    # your Oracle (DROPS and recreates all qtx_ tables!)
+```
+
+The steps: Feed backfills 400 days, Feed verifies the data, Core runs 120 days back then now (catching up), then Core status, Validate labels and reports, Core replays history, and the backtester runs Core's signals. Then it checks the engines against each other:
+- **A.** Core's live log equals Core's replay, so live and history make identical decisions.
+- **B.** Every Validate label belongs to a real Tier 3 / Tier 2 entry.
+- **C.** Validate's labels equal the backtester's outcomes. These are two separately written triple-barrier implementations.
+- **D.** Running Feed, Core and Validate again duplicates nothing.
+
+⚠ Use `--store oracle` only on a test database, or before you've collected real data.
 
 ## How Feed is organised
 

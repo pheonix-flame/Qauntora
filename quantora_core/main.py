@@ -98,19 +98,27 @@ def print_results(results) -> None:
 
 
 def run_cycle(cfg: CoreConfig, store, now: datetime):
-    results = []
+    """Evaluate every pair; one failing pair doesn't stop the rest. Returns (results, failed pairs)."""
+    results, failed = [], []
     for sym, mode in cfg.pairs():
         try:
             results.append(evaluate_pair(store, cfg, sym, mode, now))
-        except Exception:  # noqa: BLE001 — one bad pair mustn't stop the rest
+        except Exception:  # noqa: BLE001
             log.exception("%s %s: evaluation failed", sym, mode)
-    return results
+            failed.append(f"{sym} {mode}")
+    return results, failed
 
 
-def cmd_once(cfg: CoreConfig, csv_dir) -> int:
+def cmd_once(cfg: CoreConfig, csv_dir, as_of: str | None = None) -> int:
+    now = pd.Timestamp(as_of).to_pydatetime() if as_of else utc_now()
+    if as_of:
+        print(f"Evaluating as of {now} UTC (only bars closed by then are used)")
     with open_store(cfg, csv_dir) as store:
-        results = run_cycle(cfg, store, utc_now())
+        results, failed = run_cycle(cfg, store, now)
     print_results(results)
+    if failed:
+        print(f"\nFAILED: {', '.join(failed)} — see the error above. Nothing was saved for them.")
+        return 1
     return 0
 
 
@@ -121,7 +129,8 @@ def cmd_run(cfg: CoreConfig, csv_dir) -> int:
         while True:
             try:
                 with open_store(cfg, csv_dir) as store:
-                    for r in run_cycle(cfg, store, utc_now()):
+                    results, failed = run_cycle(cfg, store, utc_now())
+                    for r in results:
                         if r.status == "evaluated":
                             log.info("%s %s: %s %s score %.2f%s", r.symbol, r.mode, r.tier, r.direction or "",
                                      r.score, f" — {r.new_signals} new signal(s)" if r.new_signals else "")
@@ -209,6 +218,8 @@ def build_parser() -> argparse.ArgumentParser:
                         ("run", "evaluate after every bar close, forever"), ("status", "current tiers")]:
         sp = sub.add_parser(name, help=help_)
         sp.add_argument("--csv-dir", help="use Feed --dry-run CSVs + local state files instead of Oracle")
+        if name == "once":
+            sp.add_argument("--as-of", help="evaluate as if it were this UTC time, e.g. '2026-11-01 12:00'")
     for name, help_ in [("replay", "history -> signals CSV for the backtester"),
                         ("diagnose", "collinearity / VIF check of the indicator votes")]:
         sp = sub.add_parser(name, help=help_)
@@ -225,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "check":
         return cmd_check(cfg, args.csv_dir)
     if args.cmd == "once":
-        return cmd_once(cfg, args.csv_dir)
+        return cmd_once(cfg, args.csv_dir, args.as_of)
     if args.cmd == "run":
         return cmd_run(cfg, args.csv_dir)
     if args.cmd == "status":

@@ -120,3 +120,6 @@ ETHUSD = ["USD"]
 seconds_after_bar_close = 60   # let Feed (20 s) store the bar first
 # If the newest stored M15 bar is older than this, the data is stale: skip and warn.
 max_feed_lag_minutes = 45
+# After downtime, Core logs every tier change it missed — up to this many bars back;
+# beyond that only the latest state is logged (avoids flooding the log with stale signals).
+max_catch_up_bars = 50
