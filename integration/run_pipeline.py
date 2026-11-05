@@ -2,7 +2,7 @@
 
     python integration/run_pipeline.py --store files     # no database (Feed --dry-run CSVs)
     python integration/run_pipeline.py --store oracle    # real Oracle (uses ORACLE_* from .env)
-                                                          # !! drops and recreates all qtx_ tables !!
+                                                          # !! DELETES all qtx_ data; leaves empty tables !!
 
 Pipeline (each step is a separate process, as on your PC):
   1  Feed      init-db (oracle) + backfill 400 days of V75 from a simulated MT5
@@ -25,6 +25,7 @@ Engines never import each other; this script only runs their CLIs and reads thei
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -46,7 +47,8 @@ RESULTS: list[tuple[str, bool, str]] = []
 
 def step(name: str, cwd: str, args: list[str], env: dict, ok_codes=(0,), show_tail: int = 6) -> str:
     t = time.time()
-    proc = subprocess.run([PY, *args], cwd=ROOT / cwd, env=env, capture_output=True, text=True)
+    proc = subprocess.run([PY, *args], cwd=ROOT / cwd, env=env, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
     out = proc.stdout + proc.stderr
     passed = proc.returncode in ok_codes
     RESULTS.append((name, passed, f"exit {proc.returncode}, {time.time() - t:.1f}s"))
@@ -120,6 +122,11 @@ def bar_count(store: str, feed_csv: Path) -> int:
 
 
 def main() -> int:
+    # Windows writes piped/redirected output in cp1252, which can't encode → × — or emoji: force UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    os.environ["PYTHONIOENCODING"] = "utf-8"  # children too
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--store", choices=["files", "oracle"], default="files")
     ap.add_argument("--workdir", help="keep outputs here (default: a temp folder, deleted afterwards)")
@@ -157,6 +164,13 @@ def main() -> int:
     if not files:
         print("Resetting qtx_ tables in Oracle ...")
         reset_oracle()
+
+        def leave_clean() -> None:  # runs on success AND on failure: never leave simulated data behind
+            reset_oracle()
+            subprocess.run([PY, "../integration/fake_mt5_feed.py", "init-db"], cwd=ROOT / "quantora_feed", env=env,
+                           capture_output=True)
+            print("Oracle: simulated data removed; all qtx_ tables recreated empty.")
+        atexit.register(leave_clean)
         step("Feed: create schema", "quantora_feed", ["../integration/fake_mt5_feed.py", "init-db"], env)
 
     # 1-2 Feed

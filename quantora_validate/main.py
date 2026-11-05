@@ -91,6 +91,10 @@ def cmd_report(cfg: ValidateConfig, a) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows writes piped/redirected output in cp1252, which can't encode → × — or emoji: force UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(description="Quantora Validate — Triple Barrier outcome labelling")
     p.add_argument("--settings", help="use a different settings file")
     sub = p.add_subparsers(dest="cmd", required=True)

@@ -3,6 +3,8 @@
 A patient, multi-asset signal and execution system for Forex, Gold, Synthetic Indices and Crypto on Deriv MT5.
 The full design is in [`design_doc/Quantora_Specification.md`](design_doc/Quantora_Specification.md).
 
+> 📘 **Setting up or testing? Start with [TESTING_GUIDE.md](TESTING_GUIDE.md).** It covers installing, every setting in `.env` and where to get it, creating the Telegram bot, testing each engine and all of them together, running day to day, and troubleshooting.
+
 **Status:** Build-order steps 1–5 (Feed + schema, backtesting harness, Core, Validate, Notify) are done, and tested together end-to-end against a real Oracle database. Nothing in this repo places trades yet: Core *suggests*, and execution (Sentinel) is step 7.
 
 | Engine | Status |
